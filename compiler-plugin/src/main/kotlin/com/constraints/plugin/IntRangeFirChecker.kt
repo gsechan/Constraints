@@ -19,8 +19,14 @@ import org.jetbrains.kotlin.fir.expressions.FirLiteralExpression
 import org.jetbrains.kotlin.fir.expressions.FirPropertyAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirQualifiedAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirVariableAssignment
+import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.arguments
+import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirReturnExpressionChecker
+import org.jetbrains.kotlin.fir.declarations.FirFunction
 import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrar
+import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
+import org.jetbrains.kotlin.fir.symbols.resolvedReturnType
+import org.jetbrains.kotlin.fir.types.customAnnotations
 import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirVariableSymbol
@@ -89,6 +95,7 @@ class IntRangeCheckersExtension(session: FirSession) : FirAdditionalCheckersExte
 
     override val expressionCheckers = object : ExpressionCheckers() {
         override val variableAssignmentCheckers = setOf(IntRangeAssignmentChecker)
+        override val returnExpressionCheckers = setOf(IntRangeReturnChecker)
     }
 }
 
@@ -108,6 +115,15 @@ object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.C
             ?.calleeReference?.toResolvedVariableSymbol()
             ?.intRangeBounds(context.session) ?: return
         verify(expression.rValue, target, context, reporter)
+    }
+}
+
+/** Return:  every `return <expr>` from a function with an @IntRange return type must honour it. */
+object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common) {
+    override fun check(expression: FirReturnExpression, context: CheckerContext, reporter: DiagnosticReporter) {
+        val function = expression.target.labeledElement as? FirFunction ?: return
+        val target = function.symbol.returnTypeIntRange(context.session) ?: return
+        verify(expression.result, target, context, reporter)
     }
 }
 
@@ -168,13 +184,24 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
         "plus" -> receiver + inferInterval(call.arguments.firstOrNull(), session)
         "minus" -> receiver - inferInterval(call.arguments.firstOrNull(), session)
         "times" -> receiver * inferInterval(call.arguments.firstOrNull(), session)
-        else -> Interval.UNKNOWN
+        // Any other call: trust an @IntRange on its return type, if it has one.
+        else -> callee.returnTypeIntRange(session) ?: Interval.UNKNOWN
     }
 }
 
 /** Reads `@IntRange(min, max)` off a variable symbol as an [Interval], or null if absent. */
 private fun FirVariableSymbol<*>.intRangeBounds(session: FirSession): Interval? {
     val annotation = resolvedAnnotationsWithArguments.firstOrNull {
+        it.toAnnotationClassId(session) == INT_RANGE_CLASS_ID
+    } ?: return null
+    val min = annotation.intArgument("min") ?: return null
+    val max = annotation.intArgument("max") ?: return null
+    return Interval(min.toLong(), max.toLong())
+}
+
+/** Reads `@IntRange(min, max)` off a callable's return type as an [Interval], or null. */
+private fun FirCallableSymbol<*>.returnTypeIntRange(session: FirSession): Interval? {
+    val annotation = resolvedReturnType.customAnnotations.firstOrNull {
         it.toAnnotationClassId(session) == INT_RANGE_CLASS_ID
     } ?: return null
     val min = annotation.intArgument("min") ?: return null

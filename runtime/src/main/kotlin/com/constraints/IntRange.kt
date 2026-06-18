@@ -3,19 +3,21 @@ package com.constraints
 /**
  * Marks an Int value as constrained to the inclusive range [[min], [max]].
  *
- * The compiler plugin injects a runtime check at every assignment to a value
- * annotated with [IntRange]: the assigned value must satisfy
- * `min <= value <= max`, otherwise an [IllegalStateException] is thrown.
+ * The compiler plugin checks this at COMPILE TIME: an assignment is allowed only
+ * if the value is provably within `[min, max]` (an in-range literal, a narrower
+ * @IntRange value, interval-safe arithmetic, or an explicit [checkIntRange]
+ * call). Otherwise it is a compile error.
  *
- * This is the runtime-enforcement baseline of "Constrained Value Programming".
- * A later layer adds *static* (compile-time) checking so provably-valid
- * assignments need no runtime check at all.
+ * It may also annotate a return type -- `fun f(): @IntRange(0, 5) Int` -- in
+ * which case callers may trust the result without a runtime check, and the
+ * function's `return`s are themselves checked against the range.
  */
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,
     AnnotationTarget.FIELD,
     AnnotationTarget.VALUE_PARAMETER,
+    AnnotationTarget.TYPE,
 )
 @Retention(AnnotationRetention.SOURCE)
 annotation class IntRange(val min: Int, val max: Int)
