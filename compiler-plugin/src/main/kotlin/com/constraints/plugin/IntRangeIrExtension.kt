@@ -3,8 +3,8 @@ package com.constraints.plugin
 import org.jetbrains.kotlin.backend.common.IrElementTransformerVoidWithContext
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
+import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
 import org.jetbrains.kotlin.ir.IrStatement
-import org.jetbrains.kotlin.ir.builders.DeclarationIrBuilder
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
@@ -67,8 +67,8 @@ class IntRangeIrTransformer(
     /** Reads the `(min, max)` literals from the `@IntRange` annotation, or null if absent. */
     private fun IrVariable.intRangeBounds(): Pair<Int, Int>? {
         val annotation: IrConstructorCall = getAnnotation(INT_RANGE_ANNOTATION) ?: return null
-        val min = (annotation.getValueArgument(0) as? IrConst)?.value as? Int ?: return null
-        val max = (annotation.getValueArgument(1) as? IrConst)?.value as? Int ?: return null
+        val min = (annotation.arguments[0] as? IrConst)?.value as? Int ?: return null
+        val max = (annotation.arguments[1] as? IrConst)?.value as? Int ?: return null
         return min to max
     }
 
@@ -76,9 +76,9 @@ class IntRangeIrTransformer(
         val scopeSymbol = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scopeSymbol, value.startOffset, value.endOffset)
         return builder.irCall(checkIntRange).apply {
-            putValueArgument(0, value)
-            putValueArgument(1, builder.irInt(min))
-            putValueArgument(2, builder.irInt(max))
+            arguments[0] = value
+            arguments[1] = builder.irInt(min)
+            arguments[2] = builder.irInt(max)
         }
     }
 }
