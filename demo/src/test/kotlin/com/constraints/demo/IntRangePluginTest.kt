@@ -1,58 +1,68 @@
 package com.constraints.demo
 
 import com.constraints.IntRange
+import com.constraints.checkIntRange
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
+/**
+ * `@IntRange` is now enforced at COMPILE TIME. An assignment compiles only if the
+ * value is *provably* in range; otherwise it is a compile error and no runtime
+ * check is injected. The provably-safe cases below therefore run with zero
+ * runtime cost. The cases that must NOT compile are listed (commented) at the end
+ * -- including the `a++` example this change was built for.
+ */
 class IntRangePluginTest {
 
     @Test
-    fun `value within range is allowed`() {
-        @IntRange(0, 5) var x = 3
-        assertEquals(3, x)
+    fun `in-range literal compiles and holds`() {
+        @IntRange(0, 10) var a = 9
+        assertEquals(9, a)
     }
 
     @Test
-    fun `min boundary is allowed`() {
-        @IntRange(0, 5) var x = 0
-        assertEquals(0, x)
+    fun `narrower range is assignable to wider (subsumption)`() {
+        @IntRange(0, 5) var a = 3
+        @IntRange(0, 10) var b = a            // [0,5] is a subset of [0,10] -> proven, no check
+        assertEquals(3, b)
     }
 
     @Test
-    fun `max boundary is allowed`() {
-        @IntRange(0, 5) var x = 5
-        assertEquals(5, x)
+    fun `interval-safe arithmetic compiles`() {
+        @IntRange(0, 4) var a = 2
+        @IntRange(0, 10) var b = a + a        // [0,4] + [0,4] = [0,8] is a subset of [0,10] -> proven
+        assertEquals(4, b)
     }
 
     @Test
-    fun `below min on init throws`() {
+    fun `dynamic value via checkIntRange compiles`() {
+        val raw = 7
+        @IntRange(0, 10) var a = checkIntRange(raw, 0, 10)   // escape hatch: checked at runtime
+        assertEquals(7, a)
+    }
+
+    @Test
+    fun `checkIntRange throws at runtime when out of range`() {
         assertFailsWith<IllegalStateException> {
-            @IntRange(0, 5) var x = -1
-            println(x) // never reached
+            @IntRange(0, 10) var a = checkIntRange(42, 0, 10)
+            println(a)
         }
     }
 
-    @Test
-    fun `above max on init throws`() {
-        assertFailsWith<IllegalStateException> {
-            @IntRange(0, 5) var x = 6
-            println(x) // never reached
-        }
-    }
-
-    @Test
-    fun `reassigning within range is allowed`() {
-        @IntRange(0, 5) var x = 0
-        x = 4
-        assertEquals(4, x)
-    }
-
-    @Test
-    fun `reassigning out of range throws`() {
-        @IntRange(0, 5) var x = 0
-        assertFailsWith<IllegalStateException> {
-            x = 99
-        }
-    }
+    // -----------------------------------------------------------------------
+    // The following do NOT compile -- that is the whole point of moving the
+    // check to compile time. Uncommenting any of them is a compile error.
+    //
+    //   @IntRange(0, 10) var a = 9
+    //   a++                          // ERROR: a is [0,10], so a + 1 is [1,11], not subset of [0,10]
+    //
+    //   @IntRange(0, 10) var b = 20  // ERROR: literal 20 is not in [0,10]
+    //
+    //   val n = readLine()!!.toInt()
+    //   @IntRange(0, 10) var c = n   // ERROR: the range of n cannot be determined statically
+    //
+    // The fix in each case is an explicit runtime check, e.g.:
+    //   a = checkIntRange(a + 1, 0, 10)
+    // -----------------------------------------------------------------------
 }
