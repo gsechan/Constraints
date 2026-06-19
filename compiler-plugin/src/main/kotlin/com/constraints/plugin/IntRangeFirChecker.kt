@@ -12,6 +12,7 @@ import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirVariableAssignme
 import org.jetbrains.kotlin.fir.analysis.extensions.FirAdditionalCheckersExtension
 import org.jetbrains.kotlin.fir.declarations.FirProperty
 import org.jetbrains.kotlin.fir.expressions.FirAnnotation
+import org.jetbrains.kotlin.fir.expressions.FirDesugaredAssignmentValueReferenceExpression
 import org.jetbrains.kotlin.fir.expressions.FirExpression
 import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
 import org.jetbrains.kotlin.fir.expressions.FirLiteralExpression
@@ -112,8 +113,7 @@ object IntRangePropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
 object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(expression: FirVariableAssignment) {
-        val target = (expression.lValue as? FirQualifiedAccessExpression)
-            ?.calleeReference?.toResolvedVariableSymbol()
+        val target = expression.lValue.resolvedVariableSymbolOrNull()
             ?.intRangeBounds(context.session) ?: return
         verify(expression.rValue, target, context, reporter)
     }
@@ -168,7 +168,24 @@ private fun inferInterval(expr: FirExpression?, session: FirSession): Interval =
     is FirPropertyAccessExpression ->
         expr.calleeReference.toResolvedVariableSymbol()?.intRangeBounds(session) ?: Interval.UNKNOWN
 
+    // `a++` / `a += ...` desugar so the variable read becomes this reference wrapper.
+    is FirDesugaredAssignmentValueReferenceExpression ->
+        inferInterval(expr.expressionRef.value, session)
+
     else -> Interval.UNKNOWN
+}
+
+/**
+ * Resolves the variable an lValue refers to, unwrapping the desugared reference
+ * wrapper that `a++` / `a += ...` use in place of a direct property access.
+ */
+private fun FirExpression.resolvedVariableSymbolOrNull(): FirVariableSymbol<*>? {
+    val access = when (this) {
+        is FirQualifiedAccessExpression -> this
+        is FirDesugaredAssignmentValueReferenceExpression -> expressionRef.value as? FirQualifiedAccessExpression
+        else -> null
+    }
+    return access?.calleeReference?.toResolvedVariableSymbol()
 }
 
 private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
