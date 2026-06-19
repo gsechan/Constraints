@@ -59,6 +59,15 @@ internal data class Interval(val min: Long, val max: Long) {
         return of(corners.min(), corners.max())
     }
 
+    operator fun div(o: Interval): Interval {
+        if (isUnknown || o.isUnknown) return UNKNOWN
+        // If the divisor range includes 0 we can't bound the result (and it might divide by zero).
+        if (o.min <= 0 && o.max >= 0) return UNKNOWN
+        // Integer (truncating) division is monotonic at the corners once 0 is excluded from the divisor.
+        val corners = longArrayOf(min / o.min, min / o.max, max / o.min, max / o.max)
+        return of(corners.min(), corners.max())
+    }
+
     companion object {
         /** "Could be anything" -- the top of the lattice; never a subset of a real range. */
         val UNKNOWN = Interval(Long.MIN_VALUE, Long.MAX_VALUE)
@@ -131,6 +140,9 @@ object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common)
 
 /** Reports an error unless [rhs]'s inferred interval is provably within [target]. */
 private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext, reporter: DiagnosticReporter) {
+    // A possible divide-by-zero anywhere in the expression is a hard error in its
+    // own right -- report it and stop (the range check would just add noise).
+    if (reportDivisionByZero(rhs, context, reporter)) return
     val inferred = inferInterval(rhs, context.session)
     if (inferred.subsetOf(target)) return // statically proven in range -> no runtime check needed
 
@@ -151,6 +163,39 @@ private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext
             "@IntRange(${target.min}, ${target.max}): the ranges do not overlap, so it can never be valid."
     }
     reporter.reportOn(rhs.source, ConstraintErrors.INTRANGE_NOT_VERIFIED, message, context)
+}
+
+/**
+ * Walks [expr] for any integer division whose divisor's range is known to include 0,
+ * reporting a divide-by-zero error for each such division. Returns true if any fired.
+ */
+private fun reportDivisionByZero(expr: FirExpression?, context: CheckerContext, reporter: DiagnosticReporter): Boolean {
+    when (expr) {
+        is FirDesugaredAssignmentValueReferenceExpression ->
+            return reportDivisionByZero(expr.expressionRef.value, context, reporter)
+
+        is FirFunctionCall -> {
+            var found = reportDivisionByZero(expr.dispatchReceiver ?: expr.explicitReceiver, context, reporter)
+            for (arg in expr.arguments) {
+                if (reportDivisionByZero(arg, context, reporter)) found = true
+            }
+            if (expr.calleeReference.toResolvedNamedFunctionSymbol()?.name?.asString() == "div") {
+                val divisor = inferInterval(expr.arguments.firstOrNull(), context.session)
+                if (!divisor.isUnknown && divisor.min <= 0 && divisor.max >= 0) {
+                    reporter.reportOn(
+                        expr.source,
+                        ConstraintErrors.INTRANGE_DIVISION_BY_ZERO,
+                        "Possible divide by zero: the divisor's range [${divisor.min}, ${divisor.max}] includes 0.",
+                        context,
+                    )
+                    found = true
+                }
+            }
+            return found
+        }
+
+        else -> return false
+    }
 }
 
 // ===========================================================================
@@ -208,6 +253,7 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
         "plus" -> receiver + inferInterval(call.arguments.firstOrNull(), session)
         "minus" -> receiver - inferInterval(call.arguments.firstOrNull(), session)
         "times" -> receiver * inferInterval(call.arguments.firstOrNull(), session)
+        "div" -> receiver / inferInterval(call.arguments.firstOrNull(), session)
         // Any other call: trust an @IntRange on its return type, if it has one.
         else -> callee.returnTypeIntRange(session) ?: Interval.UNKNOWN
     }

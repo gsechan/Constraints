@@ -21,6 +21,7 @@ import org.jetbrains.kotlin.diagnostics.rendering.CommonRenderers
  */
 object ConstraintErrors : KtDiagnosticsContainer() {
     val INTRANGE_NOT_VERIFIED by error1<PsiElement, String>()
+    val INTRANGE_DIVISION_BY_ZERO by error1<PsiElement, String>()
 
     override fun getRendererFactory(): BaseDiagnosticRendererFactory = ConstraintErrorRenderers
 }
@@ -32,5 +33,6 @@ private object ConstraintErrorRenderers : BaseDiagnosticRendererFactory() {
     // defers building the map until first render, when init is complete.
     override val MAP: KtDiagnosticFactoryToRendererMap by KtDiagnosticFactoryToRendererMap("Constraints") {
         it.put(ConstraintErrors.INTRANGE_NOT_VERIFIED, "{0}", CommonRenderers.STRING)
+        it.put(ConstraintErrors.INTRANGE_DIVISION_BY_ZERO, "{0}", CommonRenderers.STRING)
     }
 }
