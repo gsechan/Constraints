@@ -47,6 +47,9 @@ internal data class Interval(val min: Long, val max: Long) {
 
     fun subsetOf(other: Interval): Boolean = min >= other.min && max <= other.max
 
+    /** True if the two ranges share at least one value (so the assignment *could* be valid). */
+    fun overlaps(other: Interval): Boolean = min <= other.max && other.min <= max
+
     operator fun plus(o: Interval) = if (isUnknown || o.isUnknown) UNKNOWN else of(min + o.min, max + o.max)
     operator fun minus(o: Interval) = if (isUnknown || o.isUnknown) UNKNOWN else of(min - o.max, max - o.min)
     operator fun times(o: Interval): Interval {
@@ -131,18 +134,23 @@ private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext
     val inferred = inferInterval(rhs, context.session)
     if (inferred.subsetOf(target)) return // statically proven in range -> no runtime check needed
 
-    val detail = if (inferred.isUnknown) {
-        "its range cannot be determined statically"
+    val message = if (inferred.overlaps(target)) {
+        // Partial overlap (or an unknown range): some values would be valid, so a
+        // runtime check is the right escape hatch.
+        val range = if (inferred.isUnknown) {
+            "its range cannot be determined statically"
+        } else {
+            "its range [${inferred.min}, ${inferred.max}] is not fully within it"
+        }
+        "Cannot prove this satisfies @IntRange(${target.min}, ${target.max}): $range. " +
+            "Wrap it in checkIntRange(value, ${target.min}, ${target.max}) to check at runtime."
     } else {
-        "its range [${inferred.min}, ${inferred.max}] is not contained in it"
+        // Disjoint ranges: the value can never be valid, so a runtime check would
+        // always fail -- report it as a definite mismatch instead.
+        "Value range [${inferred.min}, ${inferred.max}] does not match " +
+            "@IntRange(${target.min}, ${target.max}): the ranges do not overlap, so it can never be valid."
     }
-    reporter.reportOn(
-        rhs.source,
-        ConstraintErrors.INTRANGE_NOT_VERIFIED,
-        "Cannot prove this satisfies @IntRange(${target.min}, ${target.max}): $detail. " +
-            "Wrap it in checkIntRange(value, ${target.min}, ${target.max}) to defer the check to runtime.",
-        context,
-    )
+    reporter.reportOn(rhs.source, ConstraintErrors.INTRANGE_NOT_VERIFIED, message, context)
 }
 
 // ===========================================================================

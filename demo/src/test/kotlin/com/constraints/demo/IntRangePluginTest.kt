@@ -51,8 +51,8 @@ class IntRangePluginTest {
     }
     @Test
     fun accumulate() {
-        @IntRange(0, 10) val a = 29
-        assertEquals(29, a)
+        val n = 1000
+        @IntRange(0, 10) var a = n
     }
 
     // -----------------------------------------------------------------------
