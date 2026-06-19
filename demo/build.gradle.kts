@@ -33,6 +33,11 @@ tasks.test {
 tasks.named<KotlinCompile>("compileTestKotlin") {
     dependsOn(constraintsPlugin)
     val pluginClasspath = constraintsPlugin
+    // Track the plugin jar as a task input so that changing the compiler plugin
+    // actually re-runs this compilation. Without this, Gradle only sees the test
+    // sources as inputs, treats the task as up-to-date when only the plugin
+    // changed, and the plugin edits silently never take effect.
+    inputs.files(pluginClasspath)
     compilerOptions.freeCompilerArgs.add(
         provider { "-Xplugin=${pluginClasspath.singleFile.absolutePath}" }
     )

@@ -11,7 +11,6 @@ import org.jetbrains.kotlin.fir.analysis.checkers.expression.ExpressionCheckers
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirVariableAssignmentChecker
 import org.jetbrains.kotlin.fir.analysis.extensions.FirAdditionalCheckersExtension
 import org.jetbrains.kotlin.fir.declarations.FirProperty
-import org.jetbrains.kotlin.fir.declarations.resolvedAnnotationsWithArguments
 import org.jetbrains.kotlin.fir.expressions.FirAnnotation
 import org.jetbrains.kotlin.fir.expressions.FirExpression
 import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
@@ -23,14 +22,13 @@ import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.arguments
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirReturnExpressionChecker
 import org.jetbrains.kotlin.fir.declarations.FirFunction
+import org.jetbrains.kotlin.fir.declarations.toAnnotationClassId
 import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrar
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
-import org.jetbrains.kotlin.fir.symbols.resolvedReturnType
 import org.jetbrains.kotlin.fir.types.customAnnotations
 import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirVariableSymbol
-import org.jetbrains.kotlin.fir.types.toAnnotationClassId
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
@@ -80,15 +78,13 @@ internal data class Interval(val min: Long, val max: Long) {
 class IntRangeFirExtensionRegistrar : FirExtensionRegistrar() {
     override fun ExtensionRegistrarContext.configurePlugin() {
         +::IntRangeCheckersExtension
+        // Public registration path for the plugin's diagnostics (replaces the
+        // internal renderer-map / RootDiagnosticRendererFactory approach).
+        registerDiagnosticContainers(ConstraintErrors)
     }
 }
 
 class IntRangeCheckersExtension(session: FirSession) : FirAdditionalCheckersExtension(session) {
-    init {
-        // Touch the renderer object so its `init` registers the diagnostic message.
-        ConstraintErrorMessages
-    }
-
     override val declarationCheckers = object : DeclarationCheckers() {
         override val propertyCheckers = setOf(IntRangePropertyChecker)
     }
@@ -101,7 +97,8 @@ class IntRangeCheckersExtension(session: FirSession) : FirAdditionalCheckersExte
 
 /** Initialisation:  `@IntRange(min,max) var x = <initializer>` */
 object IntRangePropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
-    override fun check(declaration: FirProperty, context: CheckerContext, reporter: DiagnosticReporter) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(declaration: FirProperty) {
         val target = declaration.symbol.intRangeBounds(context.session) ?: return
         val initializer = declaration.initializer ?: return
         verify(initializer, target, context, reporter)
@@ -110,7 +107,8 @@ object IntRangePropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
 
 /** Reassignment, including `a++` / `a--` (which desugar to `a = a.inc()` / `a.dec()`). */
 object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.Common) {
-    override fun check(expression: FirVariableAssignment, context: CheckerContext, reporter: DiagnosticReporter) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(expression: FirVariableAssignment) {
         val target = (expression.lValue as? FirQualifiedAccessExpression)
             ?.calleeReference?.toResolvedVariableSymbol()
             ?.intRangeBounds(context.session) ?: return
@@ -118,9 +116,10 @@ object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.C
     }
 }
 
-/** Return:  every `return <expr>` from a function with an @IntRange return type must honour it. */
+/** Return:  every `return <expr>` from a function with an @IntRange return type must honor it. */
 object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common) {
-    override fun check(expression: FirReturnExpression, context: CheckerContext, reporter: DiagnosticReporter) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(expression: FirReturnExpression) {
         val function = expression.target.labeledElement as? FirFunction ?: return
         val target = function.symbol.returnTypeIntRange(context.session) ?: return
         verify(expression.result, target, context, reporter)
@@ -152,7 +151,7 @@ private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext
 
 private fun inferInterval(expr: FirExpression?, session: FirSession): Interval = when (expr) {
     is FirLiteralExpression ->
-        (expr.value as? Int)?.let { Interval.point(it.toLong()) } ?: Interval.UNKNOWN
+        (expr.value as? Number)?.let { Interval.point(it.toLong()) } ?: Interval.UNKNOWN
 
     is FirFunctionCall -> inferCall(expr, session)
 
@@ -169,8 +168,8 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
 
     // Escape hatch: checkIntRange(value, lo, hi) guarantees a result within [lo, hi].
     if (callee.callableId == CHECK_INT_RANGE_ID) {
-        val lo = (call.arguments.getOrNull(1) as? FirLiteralExpression)?.value as? Int
-        val hi = (call.arguments.getOrNull(2) as? FirLiteralExpression)?.value as? Int
+        val lo = ((call.arguments.getOrNull(1) as? FirLiteralExpression)?.value as? Number)?.toInt()
+        val hi = ((call.arguments.getOrNull(2) as? FirLiteralExpression)?.value as? Number)?.toInt()
         return if (lo != null && hi != null) Interval(lo.toLong(), hi.toLong()) else Interval.UNKNOWN
     }
 
@@ -209,5 +208,8 @@ private fun FirCallableSymbol<*>.returnTypeIntRange(session: FirSession): Interv
     return Interval(min.toLong(), max.toLong())
 }
 
-private fun FirAnnotation.intArgument(name: String): Int? =
-    (argumentMapping.mapping[Name.identifier(name)] as? FirLiteralExpression)?.value as? Int
+private fun FirAnnotation.intArgument(name: String): Int? {
+    val expr = argumentMapping.mapping.entries.firstOrNull { it.key.asString() == name }?.value
+    // FIR stores integer-literal values as Long, so go through Number, not `as? Int`.
+    return ((expr as? FirLiteralExpression)?.value as? Number)?.toInt()
+}

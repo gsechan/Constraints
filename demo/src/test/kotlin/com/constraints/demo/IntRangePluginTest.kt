@@ -49,6 +49,11 @@ class IntRangePluginTest {
             println(a)
         }
     }
+    @Test
+    fun accumulate() {
+        @IntRange(0, 10) val a = 29
+        assertEquals(29, a)
+    }
 
     // -----------------------------------------------------------------------
     // The following do NOT compile -- that is the whole point of moving the

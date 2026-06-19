@@ -4,6 +4,11 @@ plugins {
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions {
+        // The diagnostic-factory delegates (error1, error0, ...) are
+        // context-parameter declarations in Kotlin 2.2, so this module must opt in.
+        freeCompilerArgs.add("-Xcontext-parameters")
+    }
 }
 
 dependencies {

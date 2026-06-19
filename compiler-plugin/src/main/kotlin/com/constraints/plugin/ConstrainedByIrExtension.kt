@@ -15,6 +15,7 @@ import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrSetValue
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
+import org.jetbrains.kotlin.ir.symbols.UnsafeDuringIrConstructionAPI
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.getAnnotation
 import org.jetbrains.kotlin.name.FqName
@@ -22,6 +23,7 @@ import org.jetbrains.kotlin.name.FqName
 private val CONSTRAINED_BY_ANNOTATION = FqName("com.constraints.ConstrainedBy")
 
 /** Backend hook: walks the IR and rewrites `@ConstrainedBy` assignments. */
+@OptIn(UnsafeDuringIrConstructionAPI::class)
 class ConstrainedByIrGenerationExtension : IrGenerationExtension {
     override fun generate(moduleFragment: IrModuleFragment, pluginContext: IrPluginContext) {
         moduleFragment.transform(ConstrainedByIrTransformer(pluginContext), null)
@@ -35,6 +37,7 @@ class ConstrainedByIrGenerationExtension : IrGenerationExtension {
  * if it can't be resolved the annotation is skipped (with a stderr warning)
  * rather than crashing the compiler.
  */
+@UnsafeDuringIrConstructionAPI
 class ConstrainedByIrTransformer(
     private val pluginContext: IrPluginContext,
 ) : IrElementTransformerVoidWithContext() {
