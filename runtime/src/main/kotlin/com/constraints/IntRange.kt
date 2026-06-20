@@ -19,16 +19,17 @@ package com.constraints
     AnnotationTarget.FIELD,
     AnnotationTarget.VALUE_PARAMETER,
     AnnotationTarget.TYPE,
+    AnnotationTarget.ANNOTATION_CLASS, // so it can be used as an alias meta-annotation (e.g. @PositiveInt)
 )
-@Retention(AnnotationRetention.SOURCE)
-annotation class IntRange(val min: Int, val max: Int)
+@Retention(AnnotationRetention.BINARY) // BINARY so the plugin can read it off an alias class cross-module
+annotation class IntRange(val min: Int = Int.MIN_VALUE, val max: Int = Int.MAX_VALUE)
 
 /**
  * Runtime guard injected by the compiler plugin. Returns [value] unchanged when
  * it lies within `[min, max]` inclusive, otherwise throws.
  */
 fun checkIntRange(value: Int, min: Int, max: Int): Int {
-    if (value < min || value > max) {
+    if (value !in min..max) {
         throw ConstraintException("@IntRange constraint violated: value $value is not within $min..$max")
     }
     return value

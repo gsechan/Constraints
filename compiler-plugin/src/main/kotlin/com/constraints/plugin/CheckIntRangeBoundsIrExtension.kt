@@ -89,21 +89,40 @@ private class ConstraintTransformer(
         val scope = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scope, expr.startOffset, expr.endOffset)
         for (annotation in annotations) {
-            val validator = annotation.constraintValidator() ?: continue
-            acc = builder.irCall(validator.validate).apply {
-                arguments[0] = builder.irGetObject(validator.objectClass) // dispatch receiver (the validator object)
-                arguments[1] = acc                                        // value
-                arguments[2] = annotation.deepCopyWithSymbols()           // the annotation instance
+            for (application in annotation.constraintApplications()) {
+                acc = builder.irCall(application.validator.validate).apply {
+                    arguments[0] = builder.irGetObject(application.validator.objectClass) // dispatch receiver
+                    arguments[1] = acc                                                    // value
+                    arguments[2] = application.annotation.deepCopyWithSymbols()           // annotation instance
+                }
             }
         }
         return acc
     }
 
-    /** Resolves `@CompileTimeConstraint(V::class)` on this annotation's class to V's object + validate fn. */
-    private fun IrConstructorCall.constraintValidator(): ConstraintValidatorRef? {
-        val annotationClass = type.classOrNull?.owner ?: return null
-        val meta = annotationClass.getAnnotation(COMPILE_TIME_CONSTRAINT_FQ) ?: return null
-        val validatorClass = (meta.arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
+    /**
+     * The (validator, annotation-instance) pairs implied by this annotation: one if its
+     * class carries `@CompileTimeConstraint` directly, plus any from constraint
+     * *meta*-annotations on its class -- so an alias like `@PositiveInt` resolves through
+     * its `@IntRange(1, MAX)` meta-annotation.
+     */
+    private fun IrConstructorCall.constraintApplications(): List<ConstraintApplication> {
+        val annotationClass = type.classOrNull?.owner ?: return emptyList()
+        val result = mutableListOf<ConstraintApplication>()
+        annotationClass.getAnnotation(COMPILE_TIME_CONSTRAINT_FQ)?.validatorRef()?.let {
+            result += ConstraintApplication(it, this)
+        }
+        for (meta in annotationClass.annotations) {
+            if (meta.type.classOrNull?.owner?.getAnnotation(COMPILE_TIME_CONSTRAINT_FQ) != null) {
+                result += meta.constraintApplications()
+            }
+        }
+        return result
+    }
+
+    /** Resolves the `KClass<out ConstraintValidator>` of a `@CompileTimeConstraint` to its object + validate fn. */
+    private fun IrConstructorCall.validatorRef(): ConstraintValidatorRef? {
+        val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
         val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" } ?: return null
         return ConstraintValidatorRef(validatorClass, validate.symbol)
     }
@@ -112,4 +131,9 @@ private class ConstraintTransformer(
 private class ConstraintValidatorRef(
     val objectClass: IrClassSymbol,
     val validate: IrSimpleFunctionSymbol,
+)
+
+private class ConstraintApplication(
+    val validator: ConstraintValidatorRef,
+    val annotation: IrConstructorCall,
 )

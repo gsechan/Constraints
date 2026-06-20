@@ -29,6 +29,8 @@ import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
 import org.jetbrains.kotlin.fir.types.customAnnotations
 import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
+import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
+import org.jetbrains.kotlin.fir.symbols.impl.FirRegularClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirVariableSymbol
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
@@ -284,23 +286,32 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
     }
 }
 
-/** Reads `@IntRange(min, max)` off a variable symbol as an [Interval], or null if absent. */
-private fun FirVariableSymbol<*>.intRangeBounds(session: FirSession): Interval? {
-    val annotation = resolvedAnnotationsWithArguments.firstOrNull {
+/** The `@IntRange` bounds applied to this variable (directly or via an alias), or null. */
+private fun FirVariableSymbol<*>.intRangeBounds(session: FirSession): Interval? =
+    resolvedAnnotationsWithArguments.firstNotNullOfOrNull { it.rangeBounds(session) }
+
+/** The `@IntRange` bounds on this callable's return type (directly or via an alias), or null. */
+private fun FirCallableSymbol<*>.returnTypeIntRange(session: FirSession): Interval? =
+    resolvedReturnType.customAnnotations.firstNotNullOfOrNull { it.rangeBounds(session) }
+
+/**
+ * The `[min, max]` this annotation constrains a value to: read off `@IntRange` directly,
+ * or -- for an alias such as `@PositiveInt` -- off an `@IntRange` meta-annotation placed
+ * on the annotation's own declaration.
+ */
+private fun FirAnnotation.rangeBounds(session: FirSession): Interval? {
+    if (toAnnotationClassId(session) == INT_RANGE_CLASS_ID) return readRange(this)
+    val classId = toAnnotationClassId(session) ?: return null
+    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
+    val metaIntRange = classSymbol.resolvedAnnotationsWithArguments.firstOrNull {
         it.toAnnotationClassId(session) == INT_RANGE_CLASS_ID
     } ?: return null
-    val min = annotation.intArgument("min") ?: return null
-    val max = annotation.intArgument("max") ?: return null
-    return Interval(min.toLong(), max.toLong())
+    return readRange(metaIntRange)
 }
 
-/** Reads `@IntRange(min, max)` off a callable's return type as an [Interval], or null. */
-private fun FirCallableSymbol<*>.returnTypeIntRange(session: FirSession): Interval? {
-    val annotation = resolvedReturnType.customAnnotations.firstOrNull {
-        it.toAnnotationClassId(session) == INT_RANGE_CLASS_ID
-    } ?: return null
-    val min = annotation.intArgument("min") ?: return null
-    val max = annotation.intArgument("max") ?: return null
+private fun readRange(intRange: FirAnnotation): Interval? {
+    val min = intRange.intArgument("min") ?: return null
+    val max = intRange.intArgument("max") ?: return null
     return Interval(min.toLong(), max.toLong())
 }
 
