@@ -69,6 +69,18 @@ internal data class Interval(val min: Long, val max: Long) {
         return of(corners.min(), corners.max())
     }
 
+    operator fun rem(o: Interval): Interval {
+        if (isUnknown || o.isUnknown) return UNKNOWN
+        // Divisor may be 0 -> can't bound (reported as a divide/modulo-by-zero error elsewhere).
+        if (o.min <= 0 && o.max >= 0) return UNKNOWN
+        // `%` keeps the sign of the dividend, with |result| <= |divisor| - 1, and is also
+        // bounded by the dividend itself (when |dividend| < |divisor| the result is the dividend).
+        val maxRemainder = maxOf(kotlin.math.abs(o.min), kotlin.math.abs(o.max)) - 1
+        val lo = if (min < 0) maxOf(min, -maxRemainder) else 0L
+        val hi = if (max > 0) minOf(max, maxRemainder) else 0L
+        return of(lo, hi)
+    }
+
     companion object {
         /** "Could be anything" -- the top of the lattice; never a subset of a real range. */
         val UNKNOWN = Interval(Long.MIN_VALUE, Long.MAX_VALUE)
@@ -183,13 +195,15 @@ private fun reportDivisionByZero(expr: FirExpression?, context: CheckerContext, 
             for (arg in expr.arguments) {
                 if (reportDivisionByZero(arg, context, reporter)) found = true
             }
-            if (expr.calleeReference.toResolvedNamedFunctionSymbol()?.name?.asString() == "div") {
+            val opName = expr.calleeReference.toResolvedNamedFunctionSymbol()?.name?.asString()
+            if (opName == "div" || opName == "rem") {
                 val divisor = inferInterval(expr.arguments.firstOrNull(), context.session)
                 if (!divisor.isUnknown && divisor.min <= 0 && divisor.max >= 0) {
+                    val op = if (opName == "rem") "modulo" else "divide"
                     reporter.reportOn(
                         expr.source,
                         ConstraintErrors.INTRANGE_DIVISION_BY_ZERO,
-                        "Possible divide by zero: the divisor's range [${divisor.min}, ${divisor.max}] includes 0.",
+                        "Possible $op by zero: the divisor's range [${divisor.min}, ${divisor.max}] includes 0.",
                         context,
                     )
                     found = true
@@ -264,6 +278,7 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
         "minus" -> receiver - inferInterval(call.arguments.firstOrNull(), session)
         "times" -> receiver * inferInterval(call.arguments.firstOrNull(), session)
         "div" -> receiver / inferInterval(call.arguments.firstOrNull(), session)
+        "rem" -> receiver % inferInterval(call.arguments.firstOrNull(), session)
         // Any other call: trust an @IntRange on its return type, if it has one.
         else -> callee.returnTypeIntRange(session) ?: Interval.UNKNOWN
     }
