@@ -15,14 +15,14 @@ import kotlin.test.assertFailsWith
 // to validate() at each assignment to an annotated value.
 // ---------------------------------------------------------------------------
 
-object PositiveValidator : Validator {
+object PositiveValidator : Validator<Int> {
     override fun validate(value: Int): Int {
         if (value <= 0) throw ConstraintException("Must be positive, got $value")
         return value
     }
 }
 
-object EvenValidator : Validator {
+object EvenValidator : Validator<Int> {
     override fun validate(value: Int): Int {
         if (value % 2 != 0) throw ConstraintException("Must be even, got $value")
         return value

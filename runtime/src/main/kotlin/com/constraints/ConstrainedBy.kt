@@ -12,7 +12,7 @@ import kotlin.reflect.KClass
  * valid or throws when the constraint is broken.
  *
  * Example:
- *   object Positive : Validator {
+ *   object Positive : Validator<Int> {
  *       override fun validate(value: Int): Int {
  *           if (value <= 0) throw ConstraintException("must be positive")
  *           return value
@@ -29,4 +29,4 @@ import kotlin.reflect.KClass
     AnnotationTarget.VALUE_PARAMETER,
 )
 @Retention(AnnotationRetention.SOURCE)
-annotation class ConstrainedBy(val validator: KClass<out Validator>)
+annotation class ConstrainedBy(val validator: KClass<out Validator<*>>)

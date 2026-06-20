@@ -10,6 +10,6 @@ package com.constraints
  * [validate] should return [value] unchanged when valid, or throw (e.g.
  * [ConstraintException]) when the constraint is broken.
  */
-interface Validator {
-    fun validate(value: Int): Int
+interface Validator<T> {
+    fun validate(value: T): T
 }
