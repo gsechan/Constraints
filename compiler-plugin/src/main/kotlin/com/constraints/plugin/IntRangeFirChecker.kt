@@ -40,6 +40,7 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 
 private val INT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("IntRange"))
+private val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
 private val CONSTRAINED_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ConstrainedBy"))
 private val CHECK_INT_RANGE_ID = CallableId(FqName("com.constraints"), Name.identifier("checkIntRange"))
 private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
@@ -144,13 +145,13 @@ object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.C
     }
 }
 
-/** Return:  every `return <expr>` from a function with an @IntRange return type must honor it. */
+/** Return:  every `return <expr>` from a function with an @IntRange / @DivisibleBy return type must honor it. */
 object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(expression: FirReturnExpression) {
         val function = expression.target.labeledElement as? FirFunction ?: return
-        val target = function.symbol.returnTypeIntRange(context.session) ?: return
-        verify(expression.result, target, context, reporter)
+        function.symbol.returnTypeIntRange(context.session)?.let { verify(expression.result, it, context, reporter) }
+        function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(expression.result, it, context, reporter) }
     }
 }
 
@@ -167,6 +168,7 @@ object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common)
  *    A literal or arithmetic result can't be proven against an opaque validator, so it needs
  *    `checkConstraint`.
  *  - `@IntRange` (compile-time): proven by interval inference ([verify]).
+ *  - `@DivisibleBy` (compile-time): proven by residue inference ([verifyDivisibility]).
  */
 private fun verifyConstraints(
     symbol: FirVariableSymbol<*>,
@@ -175,8 +177,9 @@ private fun verifyConstraints(
     reporter: DiagnosticReporter,
 ) {
     val required = symbol.constrainedByKeys(context.session)
-    val target = symbol.intRangeBounds(context.session)
-    if (required.isEmpty() && target == null) return
+    val range = symbol.intRangeBounds(context.session)
+    val divisibility = symbol.divisibleBy(context.session)
+    if (required.isEmpty() && range == null && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isBareEscapeHatch(rhs)) return
@@ -193,11 +196,12 @@ private fun verifyConstraints(
                     "known to satisfy the same constraint (same annotation and arguments).",
                 context,
             )
-            return // don't also pile on an @IntRange error for the same assignment
+            return // don't also pile on a compile-time-constraint error for the same assignment
         }
     }
 
-    if (target != null) verify(rhs, target, context, reporter)
+    if (range != null) verify(rhs, range, context, reporter)
+    if (divisibility != null) verifyDivisibility(rhs, divisibility, context, reporter)
 }
 
 /**
@@ -243,6 +247,35 @@ private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext
             "@IntRange(${target.min}, ${target.max}): the ranges do not overlap, so it can never be valid."
     }
     reporter.reportOn(rhs.source, ConstraintErrors.INTRANGE_NOT_VERIFIED, message, context)
+}
+
+/** Reports an error unless [rhs] is provably congruent to [d]'s remainder modulo its divisor. */
+private fun verifyDivisibility(rhs: FirExpression, d: Divisibility, context: CheckerContext, reporter: DiagnosticReporter) {
+    // Explicit escape hatch: the IR backend injects the validator, so accept without inferring.
+    if (isBareEscapeHatch(rhs)) return
+    if (d.divisor == 0) {
+        reporter.reportOn(
+            rhs.source,
+            ConstraintErrors.DIVISIBLE_BY_NOT_VERIFIED,
+            "@DivisibleBy divisor must be non-zero.",
+            context,
+        )
+        return
+    }
+    val expected = d.remainder.toLong().mod(d.divisor.toLong())
+    val residue = inferResidue(rhs, d.divisor, context.session)
+    if (residue == expected) return // statically proven -> no runtime check needed
+
+    val message = if (residue == null) {
+        // Residue can't be determined: some values would be valid, so checkConstraint is right.
+        "Cannot prove this satisfies @DivisibleBy(${d.divisor}, ${d.remainder}): its value modulo " +
+            "${d.divisor} can't be determined statically. Wrap it in checkConstraint(value) to check at runtime."
+    } else {
+        // A different, known residue: the value can never satisfy the constraint.
+        "Value is congruent to $residue modulo ${d.divisor}, which does not match " +
+            "@DivisibleBy(${d.divisor}, ${d.remainder}) (remainder $expected): it can never be valid."
+    }
+    reporter.reportOn(rhs.source, ConstraintErrors.DIVISIBLE_BY_NOT_VERIFIED, message, context)
 }
 
 /**
@@ -348,6 +381,61 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
     }
 }
 
+// ===========================================================================
+// Residue inference (for @DivisibleBy) -- the value's residue modulo a divisor.
+//
+// Uses *floored* modulo (Kotlin's `.mod`), i.e. true congruence classes, so residues compose
+// soundly through +, -, *: (a OP b) mod n == ((a mod n) OP (b mod n)) mod n. This is why the
+// constraint must use floored modulo at runtime too -- `%` would not be sound here.
+// ===========================================================================
+
+/**
+ * The residue of [expr] modulo [divisor] (floored, in `[0, divisor)`) if it can be determined
+ * statically, else null. Tracks literals, congruence-preserving arithmetic, and reads of
+ * variables declared `@DivisibleBy` with a divisor that [divisor] divides.
+ */
+private fun inferResidue(expr: FirExpression?, divisor: Int, session: FirSession): Long? {
+    if (divisor == 0) return null
+    val d = divisor.toLong()
+    return when (expr) {
+        is FirLiteralExpression -> (expr.value as? Number)?.toLong()?.mod(d)
+
+        // A bare variable read: if it is declared @DivisibleBy(d', r') and `divisor` divides d',
+        // then `value ≡ r' (mod divisor)` (a sound invariant, since every write to it is checked).
+        is FirPropertyAccessExpression -> {
+            val known = expr.calleeReference.toResolvedVariableSymbol()?.divisibleBy(session) ?: return null
+            if (known.divisor != 0 && known.divisor % divisor == 0) known.remainder.toLong().mod(d) else null
+        }
+
+        // `a++` / `a += ...` desugar so the variable read becomes this reference wrapper.
+        is FirDesugaredAssignmentValueReferenceExpression -> inferResidue(expr.expressionRef.value, divisor, session)
+
+        is FirFunctionCall -> inferResidueCall(expr, divisor, session)
+
+        else -> null
+    }
+}
+
+private fun inferResidueCall(call: FirFunctionCall, divisor: Int, session: FirSession): Long? {
+    val d = divisor.toLong()
+    val callee = call.calleeReference.toResolvedNamedFunctionSymbol() ?: return null
+    val receiver = inferResidue(call.dispatchReceiver ?: call.explicitReceiver, divisor, session)
+    val arg = inferResidue(call.arguments.firstOrNull(), divisor, session)
+    return when (callee.name.asString()) {
+        "inc" -> receiver?.let { (it + 1).mod(d) }
+        "dec" -> receiver?.let { (it - 1).mod(d) }
+        "unaryMinus" -> receiver?.let { (-it).mod(d) }
+        "plus" -> combineResidues(receiver, arg) { a, b -> (a + b).mod(d) }
+        "minus" -> combineResidues(receiver, arg) { a, b -> (a - b).mod(d) }
+        "times" -> combineResidues(receiver, arg) { a, b -> (a * b).mod(d) }
+        // div and rem do not preserve congruence; any other call is opaque.
+        else -> null
+    }
+}
+
+private inline fun combineResidues(a: Long?, b: Long?, op: (Long, Long) -> Long): Long? =
+    if (a != null && b != null) op(a, b) else null
+
 /**
  * Identifies a `@ConstrainedBy` constraint for the transfer proof. The identity is the
  * annotation's class plus all its argument values, so two values share a constraint only
@@ -429,6 +517,38 @@ private fun readRange(intRange: FirAnnotation): Interval? {
     val min = intRange.intArgument("min") ?: return null
     val max = intRange.intArgument("max") ?: return null
     return Interval(min.toLong(), max.toLong())
+}
+
+/** A `@DivisibleBy` constraint: the value must be congruent to [remainder] modulo [divisor]. */
+private data class Divisibility(val divisor: Int, val remainder: Int)
+
+/** The `@DivisibleBy` constraint applied to this variable (directly or via an alias), or null. */
+private fun FirVariableSymbol<*>.divisibleBy(session: FirSession): Divisibility? =
+    resolvedAnnotationsWithArguments.firstNotNullOfOrNull { it.divisibilityArgs(session) }
+
+/** The `@DivisibleBy` constraint on this callable's return type (directly or via an alias), or null. */
+private fun FirCallableSymbol<*>.returnTypeDivisibleBy(session: FirSession): Divisibility? =
+    resolvedReturnType.customAnnotations.firstNotNullOfOrNull { it.divisibilityArgs(session) }
+
+/**
+ * The divisor/remainder this annotation constrains a value to: read off `@DivisibleBy` directly,
+ * or -- for an alias -- off a `@DivisibleBy` meta-annotation on the annotation's own declaration.
+ */
+private fun FirAnnotation.divisibilityArgs(session: FirSession): Divisibility? {
+    if (toAnnotationClassId(session) == DIVISIBLE_BY_CLASS_ID) return readDivisibility(this)
+    val classId = toAnnotationClassId(session) ?: return null
+    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
+    val meta = classSymbol.resolvedAnnotationsWithArguments.firstOrNull {
+        it.toAnnotationClassId(session) == DIVISIBLE_BY_CLASS_ID
+    } ?: return null
+    return readDivisibility(meta)
+}
+
+private fun readDivisibility(divisibleBy: FirAnnotation): Divisibility? {
+    val divisor = divisibleBy.intArgument("divisor") ?: return null
+    // `remainder` defaults to 0 on the annotation; treat an absent argument as that default.
+    val remainder = divisibleBy.intArgument("remainder") ?: 0
+    return Divisibility(divisor, remainder)
 }
 
 private fun FirAnnotation.intArgument(name: String): Int? {
