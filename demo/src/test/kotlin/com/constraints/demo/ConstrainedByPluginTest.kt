@@ -10,30 +10,33 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 // ---------------------------------------------------------------------------
-// User-supplied validators -- Kotlin objects implementing Validator. The
-// @ConstrainedBy annotation points at them by class. Because the validator runs
-// at runtime and can't be proven statically, every assignment to an annotated
-// value is a compile error unless wrapped in checkConstraint(value); the plugin
-// injects the validate() call into that escape hatch.
+// @ConstrainedBy is a meta-annotation: it links a constraint annotation to its
+// Validator<T, A>. You annotate a value with the constraint (e.g. @Positive,
+// @InverseRange(0, 10)), never with @ConstrainedBy directly. The plugin passes the
+// constraint annotation instance to validate(), so a data-carrying constraint can read
+// its parameters.
+//
+// Every assignment to a constrained value is a compile error unless wrapped in
+// checkConstraint(value); the plugin injects the validate() call into that escape hatch.
 // ---------------------------------------------------------------------------
 
-object PositiveValidator : Validator<Int> {
-    override fun validate(value: Int): Int {
+@ConstrainedBy(PositiveValidator::class)
+@Target(
+    AnnotationTarget.LOCAL_VARIABLE,
+    AnnotationTarget.PROPERTY,
+    AnnotationTarget.FIELD,
+    AnnotationTarget.VALUE_PARAMETER,
+)
+@Retention(AnnotationRetention.BINARY)
+annotation class Positive
+
+object PositiveValidator : Validator<Int, Positive> {
+    override fun validate(value: Int, annotation: Positive): Int {
         if (value <= 0) throw ConstraintException("Must be positive, got $value")
         return value
     }
 }
 
-object EvenValidator : Validator<Int> {
-    override fun validate(value: Int): Int {
-        if (value % 2 != 0) throw ConstraintException("Must be even, got $value")
-        return value
-    }
-}
-
-// A named alias defined by meta-annotating with @ConstrainedBy: using @Even is
-// equivalent to @ConstrainedBy(EvenValidator::class) -- the plugin follows the
-// meta-annotation and injects the same EvenValidator.validate(...) call.
 @ConstrainedBy(EvenValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
@@ -41,50 +44,63 @@ object EvenValidator : Validator<Int> {
     AnnotationTarget.FIELD,
     AnnotationTarget.VALUE_PARAMETER,
 )
-@Retention(AnnotationRetention.SOURCE)
+@Retention(AnnotationRetention.BINARY)
 annotation class Even
+
+object EvenValidator : Validator<Int, Even> {
+    override fun validate(value: Int, annotation: Even): Int {
+        if (value % 2 != 0) throw ConstraintException("Must be even, got $value")
+        return value
+    }
+}
+
+// A data-carrying constraint: the inverse of @IntRange -- the value must be OUTSIDE [min, max].
+// The validator reads min/max off the annotation instance it is handed.
+@ConstrainedBy(InverseRangeValidator::class)
+@Target(
+    AnnotationTarget.LOCAL_VARIABLE,
+    AnnotationTarget.PROPERTY,
+    AnnotationTarget.FIELD,
+    AnnotationTarget.VALUE_PARAMETER,
+)
+@Retention(AnnotationRetention.BINARY)
+annotation class InverseRange(val min: Int, val max: Int)
+
+object InverseRangeValidator : Validator<Int, InverseRange> {
+    override fun validate(value: Int, annotation: InverseRange): Int {
+        if (value in annotation.min..annotation.max)
+            throw ConstraintException("Must be outside ${annotation.min}..${annotation.max}, got $value")
+        return value
+    }
+}
 
 class ConstrainedByPluginTest {
 
     @Test
-    fun `positive validator allows positive value`() {
-        @ConstrainedBy(PositiveValidator::class) var x = checkConstraint(5)
+    fun `positive allows positive value`() {
+        @Positive var x = checkConstraint(5)
         assertEquals(5, x)
     }
 
     @Test
-    fun `positive validator throws for zero`() {
+    fun `positive throws for zero`() {
         assertFailsWith<ConstraintException> {
-            @ConstrainedBy(PositiveValidator::class) var x = checkConstraint(0)
+            @Positive var x = checkConstraint(0)
             println(x)
         }
     }
 
     @Test
-    fun `positive validator throws for negative`() {
+    fun `positive throws for negative`() {
         assertFailsWith<ConstraintException> {
-            @ConstrainedBy(PositiveValidator::class) var x = checkConstraint(-3)
-            println(x)
-        }
-    }
-
-    @Test
-    fun `even validator allows even value`() {
-        @ConstrainedBy(EvenValidator::class) var x = checkConstraint(4)
-        assertEquals(4, x)
-    }
-
-    @Test
-    fun `even validator throws for odd value`() {
-        assertFailsWith<ConstraintException> {
-            @ConstrainedBy(EvenValidator::class) var x = checkConstraint(3)
+            @Positive var x = checkConstraint(-3)
             println(x)
         }
     }
 
     @Test
     fun `reassignment is also checked`() {
-        @ConstrainedBy(PositiveValidator::class) var x = checkConstraint(1)
+        @Positive var x = checkConstraint(1)
         x = checkConstraint(10)
         assertFailsWith<ConstraintException> {
             x = checkConstraint(-1)
@@ -92,13 +108,13 @@ class ConstrainedByPluginTest {
     }
 
     @Test
-    fun `constrainedby alias allows valid value`() {
+    fun `even allows even value`() {
         @Even var x = checkConstraint(4)
         assertEquals(4, x)
     }
 
     @Test
-    fun `constrainedby alias throws for invalid value`() {
+    fun `even throws for odd value`() {
         assertFailsWith<ConstraintException> {
             @Even var x = checkConstraint(3)
             println(x)
@@ -106,7 +122,7 @@ class ConstrainedByPluginTest {
     }
 
     @Test
-    fun `constrainedby alias checks reassignment`() {
+    fun `even checks reassignment`() {
         @Even var x = checkConstraint(2)
         x = checkConstraint(8)
         assertFailsWith<ConstraintException> {
@@ -115,39 +131,53 @@ class ConstrainedByPluginTest {
     }
 
     @Test
+    fun `inverse range allows value outside the range`() {
+        // The validator reads min=0, max=10 off the annotation; 20 is outside -> valid.
+        @InverseRange(0, 10) val x = checkConstraint(20)
+        assertEquals(20, x)
+    }
+
+    @Test
+    fun `inverse range throws for value inside the range`() {
+        assertFailsWith<ConstraintException> {
+            @InverseRange(0, 10) val x = checkConstraint(5)
+            println(x)
+        }
+    }
+
+    @Test
     fun `test multiple constraints all check`() {
-        @ConstrainedBy(EvenValidator::class)
-        @IntRange(0,10) var x = checkConstraint(2)
+        @Positive
+        @IntRange(0, 10) var x = checkConstraint(2)
         assertEquals(2, x)
     }
 
     @Test
-    fun `transfer between same-validator values needs no runtime check`() {
+    fun `transfer between same-constraint values needs no runtime check`() {
         // `a` is validated once at runtime; `b = a` is *proven* at compile time because
-        // `a` is already known to satisfy PositiveValidator -- no checkConstraint, and the
-        // plugin injects no validate() call for the second assignment.
-        @ConstrainedBy(PositiveValidator::class) val a = checkConstraint(5)
-        @ConstrainedBy(PositiveValidator::class) val b = a
+        // `a` is already known to satisfy the identical constraint -- no checkConstraint,
+        // and the plugin injects no validate() call for the second assignment.
+        @Positive val a = checkConstraint(5)
+        @Positive val b = a
         assertEquals(5, b)
     }
 
     @Test
-    fun `transfer works through an alias to the same validator`() {
-        // @Even and @ConstrainedBy(EvenValidator::class) share the EvenValidator class, so
-        // the constraint identity matches and the transfer is proven.
-        @Even val a = checkConstraint(4)
-        @ConstrainedBy(EvenValidator::class) val b = a
-        assertEquals(4, b)
+    fun `transfer between identical data annotations is proven`() {
+        // Same annotation class AND equal arguments (0, 10) -> the constraints match, so the
+        // transfer is proven with no runtime check.
+        @InverseRange(0, 10) val a = checkConstraint(20)
+        @InverseRange(0, 10) val b = a
+        assertEquals(20, b)
     }
 
-
     // -----------------------------------------------------------------------
-    // These do NOT compile -- a @ConstrainedBy value can only be assigned from a
-    // checkConstraint(value) call or from another value already known to satisfy the
-    // SAME validator. A literal, arithmetic, or differently-validated source is rejected:
-    //   @ConstrainedBy(PositiveValidator::class) var x = 5            // error: opaque literal
-    //   @Even var y = 4                                              // error: opaque literal
-    //   @ConstrainedBy(EvenValidator::class) val z = positiveValue   // error: wrong validator
-    //   x = x + 1                                                    // error: arithmetic isn't tracked
+    // These do NOT compile:
+    //   @ConstrainedBy(PositiveValidator::class) val w = 5     // error: @ConstrainedBy targets
+    //                                                          //        ANNOTATION_CLASS, not values
+    //   @Positive var x = 5                                    // error: opaque literal, not validated
+    //   @InverseRange(0, 10) var y = 20                        // error: opaque literal, not validated
+    //   @InverseRange(5, 20) val z = inverseRange0to10Value    // error: arguments differ (5,20) vs (0,10)
+    //   x = x + 1                                              // error: arithmetic isn't tracked
     // -----------------------------------------------------------------------
 }

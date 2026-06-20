@@ -160,11 +160,12 @@ object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common)
  * A bare `checkConstraint(value)` defers all of them to runtime and is always accepted.
  * Otherwise each constraint must be proven statically:
  *  - `@ConstrainedBy(V)` (runtime-only): provable only if [rhs] is *already known* to satisfy
- *    every required validator -- i.e. it reads a variable whose declared `@ConstrainedBy`
- *    validators are a superset. This is sound because every write to that variable is itself
- *    checked, and validators are required to be pure (a stateless predicate on the value), so a
- *    value that satisfied V when written still satisfies V now. A literal or arithmetic result
- *    can't be proven against an opaque validator, so it needs `checkConstraint`.
+ *    every required constraint -- i.e. it reads a variable declared with the same constraint
+ *    (same annotation class and equal arguments). This is sound because every write to that
+ *    variable is itself checked, and validators are required to be pure (a stateless predicate on
+ *    the value and annotation), so a value that satisfied the constraint when written still does.
+ *    A literal or arithmetic result can't be proven against an opaque validator, so it needs
+ *    `checkConstraint`.
  *  - `@IntRange` (compile-time): proven by interval inference ([verify]).
  */
 private fun verifyConstraints(
@@ -173,7 +174,7 @@ private fun verifyConstraints(
     context: CheckerContext,
     reporter: DiagnosticReporter,
 ) {
-    val required = symbol.constrainedByValidators(context.session)
+    val required = symbol.constrainedByKeys(context.session)
     val target = symbol.intRangeBounds(context.session)
     if (required.isEmpty() && target == null) return
 
@@ -181,16 +182,15 @@ private fun verifyConstraints(
     if (isBareEscapeHatch(rhs)) return
 
     if (required.isNotEmpty()) {
-        val missing = required - knownValidators(rhs, context.session)
+        val missing = required - knownConstraints(rhs, context.session)
         if (missing.isNotEmpty()) {
-            val names = missing.joinToString(", ") { "@ConstrainedBy(${it.shortClassName.asString()})" }
-            val plural = if (missing.size == 1) "it" else "they"
+            val names = missing.joinToString(", ") { it.render() }
             reporter.reportOn(
                 rhs.source,
                 ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-                "Cannot prove this satisfies $names: $plural cannot be checked statically against an opaque " +
-                    "validator. Wrap it in checkConstraint(value) to validate at runtime, or assign from a " +
-                    "value already declared with the same @ConstrainedBy.",
+                "Cannot prove this satisfies $names: an opaque validator can't be checked statically. " +
+                    "Wrap it in checkConstraint(value) to validate at runtime, or assign from a value already " +
+                    "known to satisfy the same constraint (same annotation and arguments).",
                 context,
             )
             return // don't also pile on an @IntRange error for the same assignment
@@ -201,16 +201,16 @@ private fun verifyConstraints(
 }
 
 /**
- * The set of `@ConstrainedBy` validators [expr] is *already known* to satisfy: the declared
- * validators of the variable it reads (a sound invariant, since every write to that variable
+ * The set of `@ConstrainedBy` constraints [expr] is *already known* to satisfy: the declared
+ * constraints of the variable it reads (a sound invariant, since every write to that variable
  * is checked). Any other expression is known to satisfy nothing.
  */
-private fun knownValidators(expr: FirExpression?, session: FirSession): Set<ClassId> = when (expr) {
+private fun knownConstraints(expr: FirExpression?, session: FirSession): Set<ConstraintKey> = when (expr) {
     is FirPropertyAccessExpression ->
-        expr.calleeReference.toResolvedVariableSymbol()?.constrainedByValidators(session) ?: emptySet()
+        expr.calleeReference.toResolvedVariableSymbol()?.constrainedByKeys(session) ?: emptySet()
 
     is FirDesugaredAssignmentValueReferenceExpression ->
-        knownValidators(expr.expressionRef.value, session)
+        knownConstraints(expr.expressionRef.value, session)
 
     else -> emptySet()
 }
@@ -349,33 +349,57 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
 }
 
 /**
- * The set of `@ConstrainedBy` validator classes this variable is declared to satisfy.
- * A validator *class* (not the annotation) is the constraint's identity, so a direct
- * `@ConstrainedBy(V)` and an alias that resolves to `V` are interchangeable.
+ * Identifies a `@ConstrainedBy` constraint for the transfer proof. The identity is the
+ * annotation's class plus all its argument values, so two values share a constraint only
+ * when annotated identically -- e.g. `@InverseRange(0, 10)` matches `@InverseRange(0, 10)`
+ * but not `@InverseRange(5, 20)`.
  */
-private fun FirVariableSymbol<*>.constrainedByValidators(session: FirSession): Set<ClassId> =
-    resolvedAnnotationsWithArguments.mapNotNull { it.constrainedByValidatorClassId(session) }.toSet()
+private data class ConstraintKey(val annotationClassId: ClassId, val arguments: Map<String, Any>) {
+    fun render(): String {
+        val args = if (arguments.isEmpty()) "" else
+            arguments.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=${renderValue(v)}" }
+        return "@${annotationClassId.shortClassName.asString()}$args"
+    }
 
-/**
- * The validator class behind a `@ConstrainedBy` constraint, or null if this annotation is not
- * one. Read off `@ConstrainedBy(V::class)` directly, or -- for an alias annotation class that is
- * itself meta-annotated `@ConstrainedBy(V::class)` -- off that meta-annotation (mirrors [rangeBounds]).
- */
-private fun FirAnnotation.constrainedByValidatorClassId(session: FirSession): ClassId? {
-    val classId = toAnnotationClassId(session) ?: return null
-    if (classId == CONSTRAINED_BY_CLASS_ID) return validatorArgumentClassId()
-    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
-    val meta = classSymbol.resolvedAnnotationsWithArguments.firstOrNull {
-        it.toAnnotationClassId(session) == CONSTRAINED_BY_CLASS_ID
-    } ?: return null
-    return meta.validatorArgumentClassId()
+    private fun renderValue(v: Any): String = if (v is ClassId) v.shortClassName.asString() else v.toString()
 }
 
-/** Reads the `validator = V::class` argument of a `@ConstrainedBy` annotation as the class id of `V`. */
-private fun FirAnnotation.validatorArgumentClassId(): ClassId? {
-    val arg = argumentMapping.mapping.entries.firstOrNull { it.key.asString() == "validator" }?.value
-    val getClass = arg as? FirGetClassCall ?: return null
-    return (getClass.argument as? FirResolvedQualifier)?.classId
+/** The set of `@ConstrainedBy` constraints (by [ConstraintKey]) this variable is declared to satisfy. */
+private fun FirVariableSymbol<*>.constrainedByKeys(session: FirSession): Set<ConstraintKey> =
+    resolvedAnnotationsWithArguments.mapNotNull { it.constrainedByKey(session) }.toSet()
+
+/**
+ * The [ConstraintKey] of this annotation if it is a `@ConstrainedBy` constraint -- i.e. its
+ * annotation class is meta-annotated `@ConstrainedBy(...)` (mirrors [rangeBounds]) -- otherwise
+ * null. Null too if any argument can't be read as a comparable value, which conservatively
+ * forces the runtime `checkConstraint` path.
+ */
+private fun FirAnnotation.constrainedByKey(session: FirSession): ConstraintKey? {
+    if (!isConstrainedByConstraint(session)) return null
+    val classId = toAnnotationClassId(session) ?: return null
+    val arguments = comparableArguments() ?: return null
+    return ConstraintKey(classId, arguments)
+}
+
+private fun FirAnnotation.isConstrainedByConstraint(session: FirSession): Boolean {
+    val classId = toAnnotationClassId(session) ?: return false
+    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return false
+    return classSymbol.resolvedAnnotationsWithArguments.any { it.toAnnotationClassId(session) == CONSTRAINED_BY_CLASS_ID }
+}
+
+/** This annotation's arguments as comparable values (literals by value, `K::class` by class id), or null if any can't be read. */
+private fun FirAnnotation.comparableArguments(): Map<String, Any>? {
+    val result = mutableMapOf<String, Any>()
+    for ((name, expr) in argumentMapping.mapping) {
+        result[name.asString()] = comparableValue(expr) ?: return null
+    }
+    return result
+}
+
+private fun comparableValue(expr: FirExpression): Any? = when (expr) {
+    is FirLiteralExpression -> expr.value
+    is FirGetClassCall -> (expr.argument as? FirResolvedQualifier)?.classId
+    else -> null
 }
 
 /** The `@IntRange` bounds applied to this variable (directly or via an alias), or null. */
