@@ -6,87 +6,110 @@ import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
 import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.irCall
-import org.jetbrains.kotlin.ir.builders.irInt
+import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.declarations.IrVariable
 import org.jetbrains.kotlin.ir.expressions.IrCall
-import org.jetbrains.kotlin.ir.expressions.IrConst
+import org.jetbrains.kotlin.ir.expressions.IrClassReference
 import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrSetValue
+import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.UnsafeDuringIrConstructionAPI
+import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
+import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.getAnnotation
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 
-private val INT_RANGE_ANNOTATION_FQ = FqName("com.constraints.IntRange")
+private val COMPILE_TIME_CONSTRAINT_FQ = FqName("com.constraints.CompileTimeConstraint")
 private val CHECK_INT_RANGE_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkIntRange"))
+private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
 /**
- * Fills in the bounds for the single-argument `checkIntRange(value)` escape hatch.
+ * Implements the runtime escape hatches `checkIntRange(value)` and
+ * `checkConstraint(value)` generically.
  *
- * The frontend accepts `@IntRange(min,max) x = checkIntRange(value)` (the 1-arg
- * form) but the runtime function has no bounds to check against, so this backend
- * pass rewrites the call to `checkIntRange(value, min, max)`, pulling `min`/`max`
- * from the `@IntRange` of the value being assigned to.
+ * A bare 1-arg call is replaced by a chain of validator calls -- one per annotation
+ * on the value that carries `@CompileTimeConstraint(V::class)`:
+ *
+ *   `@IntRange(0,10) val a = checkConstraint(v)`  ->  `IntRangeValidator.validate(v, IntRange(0,10))`
+ *
+ * No constraint is special-cased here; adding a new `@CompileTimeConstraint` works
+ * with no change to this pass. Must run BEFORE the `@ConstrainedBy` extension so the
+ * bare call is still the top of the assignment when it is rewritten.
  */
 @OptIn(UnsafeDuringIrConstructionAPI::class)
 class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
     override fun generate(moduleFragment: IrModuleFragment, pluginContext: IrPluginContext) {
-        val overloads = pluginContext.referenceFunctions(CHECK_INT_RANGE_CALLABLE)
-        val oneArg = overloads.firstOrNull { it.owner.parameters.size == 1 } ?: return
-        val threeArg = overloads.firstOrNull { it.owner.parameters.size == 3 } ?: return
-        moduleFragment.transform(BoundsTransformer(pluginContext, oneArg, threeArg), null)
+        val escapeHatches = buildSet {
+            pluginContext.referenceFunctions(CHECK_INT_RANGE_CALLABLE)
+                .firstOrNull { it.owner.parameters.size == 1 }?.let { add(it) }
+            pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE).firstOrNull()?.let { add(it) }
+        }
+        if (escapeHatches.isEmpty()) return
+        moduleFragment.transform(ConstraintTransformer(pluginContext, escapeHatches), null)
     }
 }
 
 @UnsafeDuringIrConstructionAPI
-private class BoundsTransformer(
+private class ConstraintTransformer(
     private val pluginContext: IrPluginContext,
-    private val oneArgCheck: IrSimpleFunctionSymbol,
-    private val threeArgCheck: IrSimpleFunctionSymbol,
+    private val escapeHatches: Set<IrSimpleFunctionSymbol>,
 ) : IrElementTransformerVoidWithContext() {
 
-    // Initialisation:  @IntRange(0,10) var x = checkIntRange(v)  ->  ... = checkIntRange(v, 0, 10)
     override fun visitVariable(declaration: IrVariable): IrStatement {
         val result = super.visitVariable(declaration) as IrVariable
         val initializer = result.initializer
-        val bounds = result.intRangeBounds()
-        if (initializer != null && bounds != null) {
-            result.initializer = fillBounds(initializer, bounds.first, bounds.second)
+        if (initializer != null) {
+            result.initializer = applyConstraints(initializer, result.annotations)
         }
         return result
     }
 
-    // Reassignment:  x = checkIntRange(v)  ->  x = checkIntRange(v, 0, 10)
     override fun visitSetValue(expression: IrSetValue): IrExpression {
         val result = super.visitSetValue(expression) as IrSetValue
-        val bounds = (result.symbol.owner as? IrVariable)?.intRangeBounds()
-        if (bounds != null) {
-            result.value = fillBounds(result.value, bounds.first, bounds.second)
-        }
+        val annotations = (result.symbol.owner as? IrVariable)?.annotations.orEmpty()
+        result.value = applyConstraints(result.value, annotations)
         return result
     }
 
-    /** Rewrites a bare `checkIntRange(value)` call into `checkIntRange(value, min, max)`. */
-    private fun fillBounds(expr: IrExpression, min: Int, max: Int): IrExpression {
-        if (expr !is IrCall || expr.symbol != oneArgCheck) return expr
-        val value = expr.arguments[0] ?: return expr
+    /**
+     * If [expr] is a bare escape-hatch call, replaces it with a chain of
+     * `validator.validate(value, annotation)` calls over the `@CompileTimeConstraint`
+     * annotations in [annotations]. If there are none, the value is returned bare
+     * (its remaining, runtime-only constraints are wrapped on later).
+     */
+    private fun applyConstraints(expr: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
+        if (expr !is IrCall || expr.symbol !in escapeHatches) return expr
+        var acc: IrExpression = expr.arguments[0] ?: return expr
         val scope = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scope, expr.startOffset, expr.endOffset)
-        return builder.irCall(threeArgCheck).apply {
-            arguments[0] = value
-            arguments[1] = builder.irInt(min)
-            arguments[2] = builder.irInt(max)
+        for (annotation in annotations) {
+            val validator = annotation.constraintValidator() ?: continue
+            acc = builder.irCall(validator.validate).apply {
+                arguments[0] = builder.irGetObject(validator.objectClass) // dispatch receiver (the validator object)
+                arguments[1] = acc                                        // value
+                arguments[2] = annotation.deepCopyWithSymbols()           // the annotation instance
+            }
         }
+        return acc
     }
 
-    private fun IrVariable.intRangeBounds(): Pair<Int, Int>? {
-        val annotation: IrConstructorCall = getAnnotation(INT_RANGE_ANNOTATION_FQ) ?: return null
-        val min = ((annotation.arguments[0] as? IrConst)?.value as? Number)?.toInt() ?: return null
-        val max = ((annotation.arguments[1] as? IrConst)?.value as? Number)?.toInt() ?: return null
-        return min to max
+    /** Resolves `@CompileTimeConstraint(V::class)` on this annotation's class to V's object + validate fn. */
+    private fun IrConstructorCall.constraintValidator(): ConstraintValidatorRef? {
+        val annotationClass = type.classOrNull?.owner ?: return null
+        val meta = annotationClass.getAnnotation(COMPILE_TIME_CONSTRAINT_FQ) ?: return null
+        val validatorClass = (meta.arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
+        val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" } ?: return null
+        return ConstraintValidatorRef(validatorClass, validate.symbol)
     }
 }
+
+private class ConstraintValidatorRef(
+    val objectClass: IrClassSymbol,
+    val validate: IrSimpleFunctionSymbol,
+)

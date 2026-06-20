@@ -24,7 +24,10 @@ class ConstraintsComponentRegistrar : CompilerPluginRegistrar() {
 
     override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
         FirExtensionRegistrarAdapter.registerExtension(IntRangeFirExtensionRegistrar())
-        IrGenerationExtension.registerExtension(ConstrainedByIrGenerationExtension())
+        // Order matters: the escape-hatch rewrite must run BEFORE @ConstrainedBy so a
+        // bare checkConstraint(value) is rewritten while it is still the top of the
+        // assignment; @ConstrainedBy then wraps the result with its validator.
         IrGenerationExtension.registerExtension(CheckIntRangeBoundsIrGenerationExtension())
+        IrGenerationExtension.registerExtension(ConstrainedByIrGenerationExtension())
     }
 }

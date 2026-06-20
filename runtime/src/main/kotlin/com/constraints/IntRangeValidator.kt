@@ -1,0 +1,13 @@
+package com.constraints
+
+/** Runtime validator for [IntRange]; reads `min`/`max` straight off the annotation. */
+object IntRangeValidator : ConstraintValidator<IntRange> {
+    override fun validate(value: Int, annotation: IntRange): Int {
+        if (value < annotation.min || value > annotation.max) {
+            throw ConstraintException(
+                "@IntRange constraint violated: value $value is not within ${annotation.min}..${annotation.max}"
+            )
+        }
+        return value
+    }
+}

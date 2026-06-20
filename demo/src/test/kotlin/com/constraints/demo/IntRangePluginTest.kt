@@ -2,6 +2,7 @@ package com.constraints.demo
 
 import com.constraints.ConstraintException
 import com.constraints.IntRange
+import com.constraints.checkConstraint
 import com.constraints.checkIntRange
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -73,6 +74,12 @@ class IntRangePluginTest {
         assertThrows<ConstraintException> {
             @IntRange(0, 10) val c = checkIntRange(a + b)
         }
+    }
+
+    @Test
+    fun test() {
+        val n=5
+        @IntRange(0, 10) var a = checkConstraint(n)
     }
 
     // -----------------------------------------------------------------------

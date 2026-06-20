@@ -2,7 +2,9 @@ package com.constraints.demo
 
 import com.constraints.ConstrainedBy
 import com.constraints.ConstraintException
+import com.constraints.IntRange
 import com.constraints.Validator
+import com.constraints.checkConstraint
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -72,5 +74,13 @@ class ConstrainedByPluginTest {
         assertFailsWith<ConstraintException> {
             x = -1
         }
+    }
+
+    @Test
+    fun `test multiple constraints all check`() {
+        var n =12
+        @ConstrainedBy(EvenValidator::class)
+        @IntRange(0,10) var x = checkConstraint(2)
+        //Test changing 2 to 1 and 12
     }
 }

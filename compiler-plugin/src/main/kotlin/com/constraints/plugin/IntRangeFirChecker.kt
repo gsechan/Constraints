@@ -37,6 +37,7 @@ import org.jetbrains.kotlin.name.Name
 
 private val INT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("IntRange"))
 private val CHECK_INT_RANGE_ID = CallableId(FqName("com.constraints"), Name.identifier("checkIntRange"))
+private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
 // ===========================================================================
 // Interval lattice -- the part that does the actual reasoning. Pure Kotlin, so
@@ -201,10 +202,10 @@ private fun reportDivisionByZero(expr: FirExpression?, context: CheckerContext, 
     }
 }
 
-/** True if [expr] is the bare 1-arg `checkIntRange(value)` escape hatch. */
+/** True if [expr] is a bare 1-arg `checkIntRange(value)` or `checkConstraint(value)` escape hatch. */
 private fun isBareCheckIntRange(expr: FirExpression?): Boolean =
     expr is FirFunctionCall &&
-        expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId == CHECK_INT_RANGE_ID &&
+        expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId in setOf(CHECK_INT_RANGE_ID, CHECK_CONSTRAINT_ID) &&
         expr.arguments.size == 1
 
 // ===========================================================================
