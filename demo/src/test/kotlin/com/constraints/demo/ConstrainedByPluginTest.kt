@@ -31,9 +31,8 @@ import kotlin.test.assertFailsWith
 annotation class Positive
 
 object PositiveValidator : Validator<Int, Positive> {
-    override fun validate(value: Int, annotation: Positive): Int {
+    override fun validate(value: Int, annotation: Positive) {
         if (value <= 0) throw ConstraintException("Must be positive, got $value")
-        return value
     }
 }
 
@@ -48,9 +47,8 @@ object PositiveValidator : Validator<Int, Positive> {
 annotation class Even
 
 object EvenValidator : Validator<Int, Even> {
-    override fun validate(value: Int, annotation: Even): Int {
+    override fun validate(value: Int, annotation: Even) {
         if (value % 2 != 0) throw ConstraintException("Must be even, got $value")
-        return value
     }
 }
 
@@ -67,10 +65,9 @@ object EvenValidator : Validator<Int, Even> {
 annotation class InverseRange(val min: Int, val max: Int)
 
 object InverseRangeValidator : Validator<Int, InverseRange> {
-    override fun validate(value: Int, annotation: InverseRange): Int {
+    override fun validate(value: Int, annotation: InverseRange) {
         if (value in annotation.min..annotation.max)
             throw ConstraintException("Must be outside ${annotation.min}..${annotation.max}, got $value")
-        return value
     }
 }
 

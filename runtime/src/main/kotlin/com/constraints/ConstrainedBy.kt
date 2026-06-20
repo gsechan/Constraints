@@ -22,9 +22,8 @@ import kotlin.reflect.KClass
  *   annotation class Positive
  *
  *   object PositiveValidator : Validator<Int, Positive> {
- *       override fun validate(value: Int, annotation: Positive): Int {
+ *       override fun validate(value: Int, annotation: Positive) {
  *           if (value <= 0) throw ConstraintException("must be positive")
- *           return value
  *       }
  *   }
  *
@@ -38,10 +37,9 @@ import kotlin.reflect.KClass
  *   annotation class InverseRange(val min: Int, val max: Int)
  *
  *   object InverseRangeValidator : Validator<Int, InverseRange> {
- *       override fun validate(value: Int, annotation: InverseRange): Int {
+ *       override fun validate(value: Int, annotation: InverseRange) {
  *           if (value in annotation.min..annotation.max)
  *               throw ConstraintException("must be outside ${annotation.min}..${annotation.max}")
- *           return value
  *       }
  *   }
  *

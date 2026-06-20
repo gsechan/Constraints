@@ -6,8 +6,11 @@ import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
 import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.IrStatement
+import org.jetbrains.kotlin.ir.builders.irBlock
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.declarations.IrVariable
 import org.jetbrains.kotlin.ir.expressions.IrCall
@@ -35,14 +38,14 @@ private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Na
  * Implements the runtime escape hatches `checkIntRange(value)` and
  * `checkConstraint(value)` generically.
  *
- * A bare 1-arg call is replaced by a chain of validator calls -- one per constraint on
- * the value:
+ * A bare 1-arg call is replaced by a block that evaluates the value once and runs each
+ * constraint's validator against it -- one per constraint on the value:
  *
  *  - `@CompileTimeConstraint(V::class)` constraints (e.g. `@IntRange`):
- *      `@IntRange(0,10) val a = checkConstraint(v)`  ->  `IntRangeValidator.validate(v, IntRange(0,10))`
+ *      `@IntRange(0,10) val a = checkConstraint(v)`  ->  `{ val t = v; IntRangeValidator.validate(t, IntRange(0,10)); t }`
  *  - constraints whose annotation class is meta-annotated `@ConstrainedBy(V::class)` (the
  *    annotation instance is passed, so a data-carrying constraint can read its parameters):
- *      `@InverseRange(0,10) val a = checkConstraint(v)`  ->  `InverseRangeValidator.validate(v, InverseRange(0,10))`
+ *      `@InverseRange(0,10) val a = checkConstraint(v)`  ->  `{ val t = v; InverseRangeValidator.validate(t, InverseRange(0,10)); t }`
  *
  * For `@ConstrainedBy` this escape hatch is the *only* way to assign: the FIR checker
  * rejects any other RHS, since a runtime validator can never be proven statically. No
@@ -85,29 +88,32 @@ private class ConstraintTransformer(
     }
 
     /**
-     * If [expr] is a bare escape-hatch call, replaces it with a chain of `validate(value,
-     * annotation)` calls over [annotations] -- one per `@CompileTimeConstraint` and per
-     * `@ConstrainedBy` constraint. If the value carries no constraints the call's argument is
-     * returned bare. Non escape-hatch expressions are left untouched.
+     * If [expr] is a bare escape-hatch call, replaces it with a block that evaluates the value
+     * once into a temporary, runs each constraint's `validate(value, annotation)` against it
+     * (one per `@CompileTimeConstraint` and per `@ConstrainedBy` constraint), then yields the
+     * temporary. The value is evaluated exactly once and is never transformed -- validators
+     * return nothing, so they can only pass or throw. If the value carries no constraints the
+     * call's argument is returned bare. Non escape-hatch expressions are left untouched.
      */
     private fun applyConstraints(expr: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
         if (expr !is IrCall || expr.symbol !in escapeHatches) return expr
-        var acc: IrExpression = expr.arguments[0] ?: return expr
+        val value = expr.arguments[0] ?: return expr
+        val applications = annotations.flatMap { it.constraintApplications() + it.constrainedByApplications() }
+        if (applications.isEmpty()) return value
+
         val scope = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scope, expr.startOffset, expr.endOffset)
-        for (annotation in annotations) {
-            // Both @CompileTimeConstraint (e.g. @IntRange) and @ConstrainedBy validators have
-            // the same shape: validate(value, annotationInstance). The annotation passed is the
-            // one the validator reads its parameters from.
-            for (application in annotation.constraintApplications() + annotation.constrainedByApplications()) {
-                acc = builder.irCall(application.validator.validate).apply {
-                    arguments[0] = builder.irGetObject(application.validator.objectClass) // dispatch receiver
-                    arguments[1] = acc                                                    // value
-                    arguments[2] = application.annotation.deepCopyWithSymbols()           // annotation instance
+        return builder.irBlock(resultType = value.type) {
+            val tmp = irTemporary(value) // evaluate the value once
+            for (application in applications) {
+                +irCall(application.validator.validate).apply {
+                    arguments[0] = irGetObject(application.validator.objectClass) // dispatch receiver
+                    arguments[1] = irGet(tmp)                                     // value
+                    arguments[2] = application.annotation.deepCopyWithSymbols()   // annotation instance
                 }
             }
+            +irGet(tmp) // block evaluates to the (unchanged) value
         }
-        return acc
     }
 
     /**

@@ -9,9 +9,10 @@ package com.constraints
  * annotation instance (so the validator can read its parameters, e.g. an
  * `@IntRange`'s `min`/`max`).
  *
- * [validate] should return [value] unchanged when valid, or throw
- * [ConstraintException] when the constraint is broken.
+ * [validate] returns nothing: it should return normally when the value is valid, or throw
+ * [ConstraintException] when the constraint is broken. It cannot transform the value -- a
+ * constraint validates, it does not coerce.
  */
 interface ConstraintValidator<A : Annotation> {
-    fun validate(value: Int, annotation: A): Int
+    fun validate(value: Int, annotation: A)
 }
