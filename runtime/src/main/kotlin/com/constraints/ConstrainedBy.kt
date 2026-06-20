@@ -14,7 +14,7 @@ import kotlin.reflect.KClass
  * Example:
  *   object Positive : Validator {
  *       override fun validate(value: Int): Int {
- *           if (value <= 0) throw IllegalStateException("must be positive")
+ *           if (value <= 0) throw ConstraintException("must be positive")
  *           return value
  *       }
  *   }

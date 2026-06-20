@@ -143,6 +143,9 @@ private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext
     // A possible divide-by-zero anywhere in the expression is a hard error in its
     // own right -- report it and stop (the range check would just add noise).
     if (reportDivisionByZero(rhs, context, reporter)) return
+    // Single-arg `checkIntRange(value)`: explicit escape hatch; the IR backend fills
+    // its bounds from `target`, so accept it here without inferring a range.
+    if (isBareCheckIntRange(rhs)) return
     val inferred = inferInterval(rhs, context.session)
     if (inferred.subsetOf(target)) return // statically proven in range -> no runtime check needed
 
@@ -155,7 +158,7 @@ private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext
             "its range [${inferred.min}, ${inferred.max}] is not fully within it"
         }
         "Cannot prove this satisfies @IntRange(${target.min}, ${target.max}): $range. " +
-            "Wrap it in checkIntRange(value, ${target.min}, ${target.max}) to check at runtime."
+            "Wrap it in checkIntRange(value) to check at runtime."
     } else {
         // Disjoint ranges: the value can never be valid, so a runtime check would
         // always fail -- report it as a definite mismatch instead.
@@ -197,6 +200,12 @@ private fun reportDivisionByZero(expr: FirExpression?, context: CheckerContext, 
         else -> return false
     }
 }
+
+/** True if [expr] is the bare 1-arg `checkIntRange(value)` escape hatch. */
+private fun isBareCheckIntRange(expr: FirExpression?): Boolean =
+    expr is FirFunctionCall &&
+        expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId == CHECK_INT_RANGE_ID &&
+        expr.arguments.size == 1
 
 // ===========================================================================
 // Interval inference over the resolved FIR tree

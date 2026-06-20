@@ -25,5 +25,6 @@ class ConstraintsComponentRegistrar : CompilerPluginRegistrar() {
     override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
         FirExtensionRegistrarAdapter.registerExtension(IntRangeFirExtensionRegistrar())
         IrGenerationExtension.registerExtension(ConstrainedByIrGenerationExtension())
+        IrGenerationExtension.registerExtension(CheckIntRangeBoundsIrGenerationExtension())
     }
 }

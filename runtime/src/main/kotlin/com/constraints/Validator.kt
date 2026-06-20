@@ -8,7 +8,7 @@ package com.constraints
  * to [validate] at every assignment to the annotated value.
  *
  * [validate] should return [value] unchanged when valid, or throw (e.g.
- * [IllegalStateException]) when the constraint is broken.
+ * [ConstraintException]) when the constraint is broken.
  */
 interface Validator {
     fun validate(value: Int): Int

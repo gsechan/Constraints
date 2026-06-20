@@ -28,7 +28,19 @@ annotation class IntRange(val min: Int, val max: Int)
  */
 fun checkIntRange(value: Int, min: Int, max: Int): Int {
     if (value < min || value > max) {
-        throw IllegalStateException("@IntRange constraint violated: expected $min..$max but was $value")
+        throw ConstraintException("@IntRange constraint violated: value $value is not within $min..$max")
     }
     return value
 }
+
+/**
+ * Single-argument escape hatch. The compiler plugin fills in `min`/`max` from the
+ * `@IntRange` of the value being assigned to, rewriting this call to the 3-arg
+ * form. It therefore only works as the direct initializer/assignment of an
+ * `@IntRange` value; anywhere else the plugin can't supply bounds and it throws.
+ */
+@Suppress("UNUSED_PARAMETER")
+fun checkIntRange(value: Int): Int =
+    throw ConstraintException(
+        "checkIntRange(value) must initialise an @IntRange value so the compiler can supply its bounds"
+    )
