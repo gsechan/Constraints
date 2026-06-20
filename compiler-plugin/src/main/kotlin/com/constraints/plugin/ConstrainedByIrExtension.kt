@@ -13,9 +13,12 @@ import org.jetbrains.kotlin.ir.declarations.IrVariable
 import org.jetbrains.kotlin.ir.expressions.IrClassReference
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrSetValue
+import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.UnsafeDuringIrConstructionAPI
+import org.jetbrains.kotlin.ir.types.classFqName
+import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.getAnnotation
 import org.jetbrains.kotlin.name.FqName
@@ -36,6 +39,11 @@ class ConstrainedByIrGenerationExtension : IrGenerationExtension {
  * from the annotation as a class reference and resolved to its object instance;
  * if it can't be resolved the annotation is skipped (with a stderr warning)
  * rather than crashing the compiler.
+ *
+ * `@ConstrainedBy` is honoured both when applied directly and as a meta-annotation:
+ * an alias annotation class carrying `@ConstrainedBy(V::class)` injects the same
+ * validator call. A value may carry several such annotations; each contributes a
+ * `validate` call and they are chained.
  */
 @UnsafeDuringIrConstructionAPI
 class ConstrainedByIrTransformer(
@@ -46,29 +54,51 @@ class ConstrainedByIrTransformer(
     override fun visitVariable(declaration: IrVariable): IrStatement {
         val result = super.visitVariable(declaration) as IrVariable
         val initializer = result.initializer ?: return result
-        val validator = result.resolveValidator() ?: return result
-        result.initializer = wrap(initializer, validator)
+        result.initializer = wrapAll(initializer, result.annotations)
         return result
     }
 
     // Reassignment:  x = <expr>  ->  x = V.validate(<expr>)
     override fun visitSetValue(expression: IrSetValue): IrExpression {
         val result = super.visitSetValue(expression) as IrSetValue
-        val target = result.symbol.owner as? IrVariable ?: return result
-        val validator = target.resolveValidator() ?: return result
-        result.value = wrap(result.value, validator)
+        val annotations = (result.symbol.owner as? IrVariable)?.annotations.orEmpty()
+        result.value = wrapAll(result.value, annotations)
+        return result
+    }
+
+    /** Chains a `validate` call for every `@ConstrainedBy` validator implied by [annotations]. */
+    private fun wrapAll(value: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
+        var acc = value
+        for (annotation in annotations) {
+            for (validator in annotation.constrainedByValidators()) {
+                acc = wrap(acc, validator)
+            }
+        }
+        return acc
+    }
+
+    /**
+     * The validators implied by this annotation: one if it *is* `@ConstrainedBy(V::class)`,
+     * plus one if its annotation class is itself meta-annotated `@ConstrainedBy(V::class)`
+     * (the alias case).
+     */
+    private fun IrConstructorCall.constrainedByValidators(): List<ValidatorRef> {
+        val result = mutableListOf<ValidatorRef>()
+        if (type.classFqName == CONSTRAINED_BY_ANNOTATION) {
+            resolveValidator()?.let { result += it }
+        }
+        type.classOrNull?.owner?.getAnnotation(CONSTRAINED_BY_ANNOTATION)?.resolveValidator()?.let { result += it }
         return result
     }
 
     /**
-     * Reads the validator class from `@ConstrainedBy(V::class)`, checks it is an
-     * `object`, and locates its `validate` function. Returns null (and warns) if
-     * the annotation is absent or the validator is unusable, so bad validators
-     * degrade gracefully instead of crashing the compiler.
+     * Reads the validator class from a `@ConstrainedBy(V::class)` construction, checks it
+     * is an `object`, and locates its `validate` function. Returns null (and warns) if the
+     * validator is unusable, so bad validators degrade gracefully instead of crashing the
+     * compiler.
      */
-    private fun IrVariable.resolveValidator(): ValidatorRef? {
-        val annotation = getAnnotation(CONSTRAINED_BY_ANNOTATION) ?: return null
-        val classRef = annotation.arguments[0] as? IrClassReference ?: return null
+    private fun IrConstructorCall.resolveValidator(): ValidatorRef? {
+        val classRef = arguments[0] as? IrClassReference ?: return null
         val validatorClass = classRef.symbol as? IrClassSymbol ?: return null
 
         if (validatorClass.owner.kind != ClassKind.OBJECT) {

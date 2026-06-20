@@ -29,6 +29,19 @@ object EvenValidator : Validator<Int> {
     }
 }
 
+// A named alias defined by meta-annotating with @ConstrainedBy: using @Even is
+// equivalent to @ConstrainedBy(EvenValidator::class) -- the plugin follows the
+// meta-annotation and injects the same EvenValidator.validate(...) call.
+@ConstrainedBy(EvenValidator::class)
+@Target(
+    AnnotationTarget.LOCAL_VARIABLE,
+    AnnotationTarget.PROPERTY,
+    AnnotationTarget.FIELD,
+    AnnotationTarget.VALUE_PARAMETER,
+)
+@Retention(AnnotationRetention.SOURCE)
+annotation class Even
+
 class ConstrainedByPluginTest {
 
     @Test
@@ -73,6 +86,29 @@ class ConstrainedByPluginTest {
         x = 10
         assertFailsWith<ConstraintException> {
             x = -1
+        }
+    }
+
+    @Test
+    fun `constrainedby alias allows valid value`() {
+        @Even var x = 4
+        assertEquals(4, x)
+    }
+
+    @Test
+    fun `constrainedby alias throws for invalid value`() {
+        assertFailsWith<ConstraintException> {
+            @Even var x = 3
+            println(x)
+        }
+    }
+
+    @Test
+    fun `constrainedby alias checks reassignment`() {
+        @Even var x = 2
+        x = 8
+        assertFailsWith<ConstraintException> {
+            x = 5
         }
     }
 

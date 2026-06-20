@@ -21,12 +21,23 @@ import kotlin.reflect.KClass
  *
  *   @ConstrainedBy(Positive::class)
  *   var count: Int = 0
+ *
+ * It can also be used as a meta-annotation to define a named alias -- the plugin
+ * follows `@ConstrainedBy` on an annotation class and injects the same validator
+ * call for the alias:
+ *
+ *   @ConstrainedBy(Positive::class)
+ *   @Target(AnnotationTarget.LOCAL_VARIABLE, ...)
+ *   annotation class PositiveCount
+ *
+ *   @PositiveCount var count: Int = 0   // injects Positive.validate(...) just like the direct form
  */
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,
     AnnotationTarget.FIELD,
     AnnotationTarget.VALUE_PARAMETER,
+    AnnotationTarget.ANNOTATION_CLASS,
 )
-@Retention(AnnotationRetention.SOURCE)
+@Retention(AnnotationRetention.BINARY)
 annotation class ConstrainedBy(val validator: KClass<out Validator<*>>)
