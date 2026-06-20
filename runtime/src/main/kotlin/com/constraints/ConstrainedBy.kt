@@ -6,10 +6,12 @@ import kotlin.reflect.KClass
  * Marks a value as constrained by a user-supplied [Validator] -- the
  * maximally-flexible escape hatch for constraints the built-ins can't express.
  *
- * [validator] is the class of a [Validator] implemented as a Kotlin `object`.
- * The compiler plugin injects a call to that validator's `validate` function at
- * every assignment to the annotated value; `validate` returns the value when
- * valid or throws when the constraint is broken.
+ * [validator] is the class of a [Validator] implemented as a Kotlin `object`. Because
+ * the validator is arbitrary runtime code, an assignment can never be proven safe at
+ * compile time, so the plugin treats `@ConstrainedBy` like a non-null type that must be
+ * explicitly checked: every assignment is a compile error unless the value is wrapped in
+ * `checkConstraint(value)`. The plugin then injects the validator call into that escape
+ * hatch; `validate` returns the value when valid or throws when the constraint is broken.
  *
  * Example:
  *   object Positive : Validator<Int> {
@@ -20,7 +22,7 @@ import kotlin.reflect.KClass
  *   }
  *
  *   @ConstrainedBy(Positive::class)
- *   var count: Int = 0
+ *   var count: Int = checkConstraint(0)   // plain `= 0` would be a compile error
  *
  * It can also be used as a meta-annotation to define a named alias -- the plugin
  * follows `@ConstrainedBy` on an annotation class and injects the same validator
@@ -30,7 +32,7 @@ import kotlin.reflect.KClass
  *   @Target(AnnotationTarget.LOCAL_VARIABLE, ...)
  *   annotation class PositiveCount
  *
- *   @PositiveCount var count: Int = 0   // injects Positive.validate(...) just like the direct form
+ *   @PositiveCount var count: Int = checkConstraint(0)   // injects Positive.validate(...)
  */
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,

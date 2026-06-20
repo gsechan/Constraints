@@ -16,7 +16,10 @@ import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrarAdapter
  *                      literal, a narrower @IntRange variable, interval-safe
  *                      arithmetic, or an explicit checkIntRange(...) call). Otherwise
  *                      it is a compile error -- no runtime check is injected.
- *  - @ConstrainedBy -- runtime validator resolved by fully-qualified name (unchanged).
+ *  - @ConstrainedBy -- runtime-only validator. Its result can never be proven statically,
+ *                      so the FIR checker rejects every assignment except a bare
+ *                      checkConstraint(value); the IR backend injects the validator call
+ *                      into that escape hatch (same pass that handles @IntRange's).
  */
 @OptIn(ExperimentalCompilerApi::class)
 class ConstraintsComponentRegistrar : CompilerPluginRegistrar() {
@@ -24,10 +27,8 @@ class ConstraintsComponentRegistrar : CompilerPluginRegistrar() {
 
     override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
         FirExtensionRegistrarAdapter.registerExtension(IntRangeFirExtensionRegistrar())
-        // Order matters: the escape-hatch rewrite must run BEFORE @ConstrainedBy so a
-        // bare checkConstraint(value) is rewritten while it is still the top of the
-        // assignment; @ConstrainedBy then wraps the result with its validator.
+        // The escape-hatch rewrite injects validator calls for both @IntRange (compile-time)
+        // and @ConstrainedBy (runtime-only) constraints into checkConstraint(value)/checkIntRange(value).
         IrGenerationExtension.registerExtension(CheckIntRangeBoundsIrGenerationExtension())
-        IrGenerationExtension.registerExtension(ConstrainedByIrGenerationExtension())
     }
 }
