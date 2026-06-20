@@ -15,9 +15,11 @@ import org.jetbrains.kotlin.fir.expressions.FirAnnotation
 import org.jetbrains.kotlin.fir.expressions.FirDesugaredAssignmentValueReferenceExpression
 import org.jetbrains.kotlin.fir.expressions.FirExpression
 import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
+import org.jetbrains.kotlin.fir.expressions.FirGetClassCall
 import org.jetbrains.kotlin.fir.expressions.FirLiteralExpression
 import org.jetbrains.kotlin.fir.expressions.FirPropertyAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirQualifiedAccessExpression
+import org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier
 import org.jetbrains.kotlin.fir.expressions.FirVariableAssignment
 import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.arguments
@@ -38,6 +40,7 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 
 private val INT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("IntRange"))
+private val CONSTRAINED_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ConstrainedBy"))
 private val CHECK_INT_RANGE_ID = CallableId(FqName("com.constraints"), Name.identifier("checkIntRange"))
 private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
@@ -127,9 +130,8 @@ class IntRangeCheckersExtension(session: FirSession) : FirAdditionalCheckersExte
 object IntRangePropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(declaration: FirProperty) {
-        val target = declaration.symbol.intRangeBounds(context.session) ?: return
         val initializer = declaration.initializer ?: return
-        verify(initializer, target, context, reporter)
+        verifyConstraints(declaration.symbol, initializer, context, reporter)
     }
 }
 
@@ -137,9 +139,8 @@ object IntRangePropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
 object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(expression: FirVariableAssignment) {
-        val target = expression.lValue.resolvedVariableSymbolOrNull()
-            ?.intRangeBounds(context.session) ?: return
-        verify(expression.rValue, target, context, reporter)
+        val symbol = expression.lValue.resolvedVariableSymbolOrNull() ?: return
+        verifyConstraints(symbol, expression.rValue, context, reporter)
     }
 }
 
@@ -153,6 +154,67 @@ object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common)
     }
 }
 
+/**
+ * Verifies every constraint declared on [symbol] against its assigned [rhs].
+ *
+ * A bare `checkConstraint(value)` defers all of them to runtime and is always accepted.
+ * Otherwise each constraint must be proven statically:
+ *  - `@ConstrainedBy(V)` (runtime-only): provable only if [rhs] is *already known* to satisfy
+ *    every required constraint -- i.e. it reads a variable declared with the same constraint
+ *    (same annotation class and equal arguments). This is sound because every write to that
+ *    variable is itself checked, and validators are required to be pure (a stateless predicate on
+ *    the value and annotation), so a value that satisfied the constraint when written still does.
+ *    A literal or arithmetic result can't be proven against an opaque validator, so it needs
+ *    `checkConstraint`.
+ *  - `@IntRange` (compile-time): proven by interval inference ([verify]).
+ */
+private fun verifyConstraints(
+    symbol: FirVariableSymbol<*>,
+    rhs: FirExpression,
+    context: CheckerContext,
+    reporter: DiagnosticReporter,
+) {
+    val required = symbol.constrainedByKeys(context.session)
+    val target = symbol.intRangeBounds(context.session)
+    if (required.isEmpty() && target == null) return
+
+    // The escape hatch satisfies every constraint -- the IR backend injects the checks.
+    if (isBareEscapeHatch(rhs)) return
+
+    if (required.isNotEmpty()) {
+        val missing = required - knownConstraints(rhs, context.session)
+        if (missing.isNotEmpty()) {
+            val names = missing.joinToString(", ") { it.render() }
+            reporter.reportOn(
+                rhs.source,
+                ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+                "Cannot prove this satisfies $names: an opaque validator can't be checked statically. " +
+                    "Wrap it in checkConstraint(value) to validate at runtime, or assign from a value already " +
+                    "known to satisfy the same constraint (same annotation and arguments).",
+                context,
+            )
+            return // don't also pile on an @IntRange error for the same assignment
+        }
+    }
+
+    if (target != null) verify(rhs, target, context, reporter)
+}
+
+/**
+ * The set of `@ConstrainedBy` constraints [expr] is *already known* to satisfy: the declared
+ * constraints of the variable it reads (a sound invariant, since every write to that variable
+ * is checked). Any other expression is known to satisfy nothing.
+ */
+private fun knownConstraints(expr: FirExpression?, session: FirSession): Set<ConstraintKey> = when (expr) {
+    is FirPropertyAccessExpression ->
+        expr.calleeReference.toResolvedVariableSymbol()?.constrainedByKeys(session) ?: emptySet()
+
+    is FirDesugaredAssignmentValueReferenceExpression ->
+        knownConstraints(expr.expressionRef.value, session)
+
+    else -> emptySet()
+}
+
 /** Reports an error unless [rhs]'s inferred interval is provably within [target]. */
 private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext, reporter: DiagnosticReporter) {
     // A possible divide-by-zero anywhere in the expression is a hard error in its
@@ -160,7 +222,7 @@ private fun verify(rhs: FirExpression, target: Interval, context: CheckerContext
     if (reportDivisionByZero(rhs, context, reporter)) return
     // Single-arg `checkIntRange(value)`: explicit escape hatch; the IR backend fills
     // its bounds from `target`, so accept it here without inferring a range.
-    if (isBareCheckIntRange(rhs)) return
+    if (isBareEscapeHatch(rhs)) return
     val inferred = inferInterval(rhs, context.session)
     if (inferred.subsetOf(target)) return // statically proven in range -> no runtime check needed
 
@@ -219,7 +281,7 @@ private fun reportDivisionByZero(expr: FirExpression?, context: CheckerContext, 
 }
 
 /** True if [expr] is a bare 1-arg `checkIntRange(value)` or `checkConstraint(value)` escape hatch. */
-private fun isBareCheckIntRange(expr: FirExpression?): Boolean =
+private fun isBareEscapeHatch(expr: FirExpression?): Boolean =
     expr is FirFunctionCall &&
         expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId in setOf(CHECK_INT_RANGE_ID, CHECK_CONSTRAINT_ID) &&
         expr.arguments.size == 1
@@ -284,6 +346,60 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
         // Any other call: trust an @IntRange on its return type, if it has one.
         else -> callee.returnTypeIntRange(session) ?: Interval.UNKNOWN
     }
+}
+
+/**
+ * Identifies a `@ConstrainedBy` constraint for the transfer proof. The identity is the
+ * annotation's class plus all its argument values, so two values share a constraint only
+ * when annotated identically -- e.g. `@InverseRange(0, 10)` matches `@InverseRange(0, 10)`
+ * but not `@InverseRange(5, 20)`.
+ */
+private data class ConstraintKey(val annotationClassId: ClassId, val arguments: Map<String, Any>) {
+    fun render(): String {
+        val args = if (arguments.isEmpty()) "" else
+            arguments.entries.joinToString(", ", "(", ")") { (k, v) -> "$k=${renderValue(v)}" }
+        return "@${annotationClassId.shortClassName.asString()}$args"
+    }
+
+    private fun renderValue(v: Any): String = if (v is ClassId) v.shortClassName.asString() else v.toString()
+}
+
+/** The set of `@ConstrainedBy` constraints (by [ConstraintKey]) this variable is declared to satisfy. */
+private fun FirVariableSymbol<*>.constrainedByKeys(session: FirSession): Set<ConstraintKey> =
+    resolvedAnnotationsWithArguments.mapNotNull { it.constrainedByKey(session) }.toSet()
+
+/**
+ * The [ConstraintKey] of this annotation if it is a `@ConstrainedBy` constraint -- i.e. its
+ * annotation class is meta-annotated `@ConstrainedBy(...)` (mirrors [rangeBounds]) -- otherwise
+ * null. Null too if any argument can't be read as a comparable value, which conservatively
+ * forces the runtime `checkConstraint` path.
+ */
+private fun FirAnnotation.constrainedByKey(session: FirSession): ConstraintKey? {
+    if (!isConstrainedByConstraint(session)) return null
+    val classId = toAnnotationClassId(session) ?: return null
+    val arguments = comparableArguments() ?: return null
+    return ConstraintKey(classId, arguments)
+}
+
+private fun FirAnnotation.isConstrainedByConstraint(session: FirSession): Boolean {
+    val classId = toAnnotationClassId(session) ?: return false
+    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return false
+    return classSymbol.resolvedAnnotationsWithArguments.any { it.toAnnotationClassId(session) == CONSTRAINED_BY_CLASS_ID }
+}
+
+/** This annotation's arguments as comparable values (literals by value, `K::class` by class id), or null if any can't be read. */
+private fun FirAnnotation.comparableArguments(): Map<String, Any>? {
+    val result = mutableMapOf<String, Any>()
+    for ((name, expr) in argumentMapping.mapping) {
+        result[name.asString()] = comparableValue(expr) ?: return null
+    }
+    return result
+}
+
+private fun comparableValue(expr: FirExpression): Any? = when (expr) {
+    is FirLiteralExpression -> expr.value
+    is FirGetClassCall -> (expr.argument as? FirResolvedQualifier)?.classId
+    else -> null
 }
 
 /** The `@IntRange` bounds applied to this variable (directly or via an alias), or null. */

@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.backend.common.IrElementTransformerVoidWithContext
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
 import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
+import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irGetObject
@@ -26,6 +27,7 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 
 private val COMPILE_TIME_CONSTRAINT_FQ = FqName("com.constraints.CompileTimeConstraint")
+private val CONSTRAINED_BY_FQ = FqName("com.constraints.ConstrainedBy")
 private val CHECK_INT_RANGE_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkIntRange"))
 private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
@@ -33,14 +35,19 @@ private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Na
  * Implements the runtime escape hatches `checkIntRange(value)` and
  * `checkConstraint(value)` generically.
  *
- * A bare 1-arg call is replaced by a chain of validator calls -- one per annotation
- * on the value that carries `@CompileTimeConstraint(V::class)`:
+ * A bare 1-arg call is replaced by a chain of validator calls -- one per constraint on
+ * the value:
  *
- *   `@IntRange(0,10) val a = checkConstraint(v)`  ->  `IntRangeValidator.validate(v, IntRange(0,10))`
+ *  - `@CompileTimeConstraint(V::class)` constraints (e.g. `@IntRange`):
+ *      `@IntRange(0,10) val a = checkConstraint(v)`  ->  `IntRangeValidator.validate(v, IntRange(0,10))`
+ *  - constraints whose annotation class is meta-annotated `@ConstrainedBy(V::class)` (the
+ *    annotation instance is passed, so a data-carrying constraint can read its parameters):
+ *      `@InverseRange(0,10) val a = checkConstraint(v)`  ->  `InverseRangeValidator.validate(v, InverseRange(0,10))`
  *
- * No constraint is special-cased here; adding a new `@CompileTimeConstraint` works
- * with no change to this pass. Must run BEFORE the `@ConstrainedBy` extension so the
- * bare call is still the top of the assignment when it is rewritten.
+ * For `@ConstrainedBy` this escape hatch is the *only* way to assign: the FIR checker
+ * rejects any other RHS, since a runtime validator can never be proven statically. No
+ * constraint is otherwise special-cased; adding a new `@CompileTimeConstraint` works with
+ * no change to this pass.
  */
 @OptIn(UnsafeDuringIrConstructionAPI::class)
 class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
@@ -78,10 +85,10 @@ private class ConstraintTransformer(
     }
 
     /**
-     * If [expr] is a bare escape-hatch call, replaces it with a chain of
-     * `validator.validate(value, annotation)` calls over the `@CompileTimeConstraint`
-     * annotations in [annotations]. If there are none, the value is returned bare
-     * (its remaining, runtime-only constraints are wrapped on later).
+     * If [expr] is a bare escape-hatch call, replaces it with a chain of `validate(value,
+     * annotation)` calls over [annotations] -- one per `@CompileTimeConstraint` and per
+     * `@ConstrainedBy` constraint. If the value carries no constraints the call's argument is
+     * returned bare. Non escape-hatch expressions are left untouched.
      */
     private fun applyConstraints(expr: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
         if (expr !is IrCall || expr.symbol !in escapeHatches) return expr
@@ -89,7 +96,10 @@ private class ConstraintTransformer(
         val scope = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scope, expr.startOffset, expr.endOffset)
         for (annotation in annotations) {
-            for (application in annotation.constraintApplications()) {
+            // Both @CompileTimeConstraint (e.g. @IntRange) and @ConstrainedBy validators have
+            // the same shape: validate(value, annotationInstance). The annotation passed is the
+            // one the validator reads its parameters from.
+            for (application in annotation.constraintApplications() + annotation.constrainedByApplications()) {
                 acc = builder.irCall(application.validator.validate).apply {
                     arguments[0] = builder.irGetObject(application.validator.objectClass) // dispatch receiver
                     arguments[1] = acc                                                    // value
@@ -124,6 +134,41 @@ private class ConstraintTransformer(
     private fun IrConstructorCall.validatorRef(): ConstraintValidatorRef? {
         val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
         val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" } ?: return null
+        return ConstraintValidatorRef(validatorClass, validate.symbol)
+    }
+
+    /**
+     * The `@ConstrainedBy` application implied by this annotation, if its annotation class is
+     * meta-annotated `@ConstrainedBy(V::class)`. The validator reads *this* immediate annotation
+     * (e.g. `@InverseRange(0, 10)`), where the data lives. `@ConstrainedBy` is a meta-annotation
+     * only, so there is no direct-on-the-value case.
+     */
+    private fun IrConstructorCall.constrainedByApplications(): List<ConstraintApplication> {
+        val validator = type.classOrNull?.owner?.getAnnotation(CONSTRAINED_BY_FQ)?.resolveConstrainedByValidator()
+            ?: return emptyList()
+        return listOf(ConstraintApplication(validator, this))
+    }
+
+    /**
+     * Reads the validator class from a `@ConstrainedBy(V::class)` construction, checks it is an
+     * `object`, and locates its `validate` function. Returns null (and warns) if the validator is
+     * unusable, so bad validators degrade gracefully instead of crashing the compiler.
+     */
+    private fun IrConstructorCall.resolveConstrainedByValidator(): ConstraintValidatorRef? {
+        val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
+        if (validatorClass.owner.kind != ClassKind.OBJECT) {
+            System.err.println(
+                "constraints plugin: @ConstrainedBy validator '${validatorClass.owner.name}' must be a Kotlin object — check skipped"
+            )
+            return null
+        }
+        val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" }
+        if (validate == null) {
+            System.err.println(
+                "constraints plugin: @ConstrainedBy validator '${validatorClass.owner.name}' has no validate(...) function — check skipped"
+            )
+            return null
+        }
         return ConstraintValidatorRef(validatorClass, validate.symbol)
     }
 }

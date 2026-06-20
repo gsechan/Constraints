@@ -10,10 +10,13 @@ import org.jetbrains.kotlin.diagnostics.rendering.CommonRenderers
 /**
  * Compile-time diagnostics reported by the constraints plugin.
  *
- * [INTRANGE_NOT_VERIFIED] is an ERROR carrying one String argument -- the
- * human-readable explanation passed at the report site. It fires when an
- * `@IntRange` assignment cannot be statically proven to lie within the declared
- * range.
+ * Each is an ERROR carrying one String argument -- the human-readable explanation
+ * passed at the report site:
+ *  - [INTRANGE_NOT_VERIFIED]   -- an `@IntRange` assignment can't be statically proven
+ *                                 to lie within the declared range.
+ *  - [INTRANGE_DIVISION_BY_ZERO] -- an integer division/modulo whose divisor range includes 0.
+ *  - [CONSTRAINT_NOT_VALIDATED] -- an assignment to a runtime-only `@ConstrainedBy` value
+ *                                 that isn't wrapped in `checkConstraint(value)`.
  *
  * Declared on a [KtDiagnosticsContainer] (the context `error1` needs) and wired
  * into the compiler via `registerDiagnosticContainers(...)` in the FIR registrar.
@@ -22,6 +25,7 @@ import org.jetbrains.kotlin.diagnostics.rendering.CommonRenderers
 object ConstraintErrors : KtDiagnosticsContainer() {
     val INTRANGE_NOT_VERIFIED by error1<PsiElement, String>()
     val INTRANGE_DIVISION_BY_ZERO by error1<PsiElement, String>()
+    val CONSTRAINT_NOT_VALIDATED by error1<PsiElement, String>()
 
     override fun getRendererFactory(): BaseDiagnosticRendererFactory = ConstraintErrorRenderers
 }
@@ -34,5 +38,6 @@ private object ConstraintErrorRenderers : BaseDiagnosticRendererFactory() {
     override val MAP: KtDiagnosticFactoryToRendererMap by KtDiagnosticFactoryToRendererMap("Constraints") {
         it.put(ConstraintErrors.INTRANGE_NOT_VERIFIED, "{0}", CommonRenderers.STRING)
         it.put(ConstraintErrors.INTRANGE_DIVISION_BY_ZERO, "{0}", CommonRenderers.STRING)
+        it.put(ConstraintErrors.CONSTRAINT_NOT_VALIDATED, "{0}", CommonRenderers.STRING)
     }
 }
