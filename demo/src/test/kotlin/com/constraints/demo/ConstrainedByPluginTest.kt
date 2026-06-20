@@ -36,7 +36,9 @@ object PositiveValidator : Validator<Int, Positive> {
     }
 }
 
-@ConstrainedBy(EvenValidator::class)
+// A no-data custom constraint -- the kind @DivisibleBy/@IntRange can't express, so it needs a
+// runtime Validator. (Evenness itself is a built-in now: @Even == @DivisibleBy(2, 0).)
+@ConstrainedBy(NonZeroValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,
@@ -44,11 +46,11 @@ object PositiveValidator : Validator<Int, Positive> {
     AnnotationTarget.VALUE_PARAMETER,
 )
 @Retention(AnnotationRetention.BINARY)
-annotation class Even
+annotation class NonZero
 
-object EvenValidator : Validator<Int, Even> {
-    override fun validate(value: Int, annotation: Even) {
-        if (value % 2 != 0) throw ConstraintException("Must be even, got $value")
+object NonZeroValidator : Validator<Int, NonZero> {
+    override fun validate(value: Int, annotation: NonZero) {
+        if (value == 0) throw ConstraintException("Must be non-zero")
     }
 }
 
@@ -105,25 +107,25 @@ class ConstrainedByPluginTest {
     }
 
     @Test
-    fun `even allows even value`() {
-        @Even var x = checkConstraint(4)
+    fun `non-zero allows a non-zero value`() {
+        @NonZero var x = checkConstraint(4)
         assertEquals(4, x)
     }
 
     @Test
-    fun `even throws for odd value`() {
+    fun `non-zero throws for zero`() {
         assertFailsWith<ConstraintException> {
-            @Even var x = checkConstraint(3)
+            @NonZero var x = checkConstraint(0)
             println(x)
         }
     }
 
     @Test
-    fun `even checks reassignment`() {
-        @Even var x = checkConstraint(2)
+    fun `non-zero checks reassignment`() {
+        @NonZero var x = checkConstraint(2)
         x = checkConstraint(8)
         assertFailsWith<ConstraintException> {
-            x = checkConstraint(5)
+            x = checkConstraint(0)
         }
     }
 

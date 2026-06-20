@@ -2,6 +2,8 @@ package com.constraints.demo
 
 import com.constraints.ConstraintException
 import com.constraints.DivisibleBy
+import com.constraints.Even
+import com.constraints.Odd
 import com.constraints.checkConstraint
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -83,10 +85,43 @@ class DivisibleByPluginTest {
         }
     }
 
+    // --- @Even / @Odd aliases (for @DivisibleBy(2, 0) / @DivisibleBy(2, 1)) ---
+
+    @Test
+    fun `even alias proves an even literal`() {
+        @Even val a = 4
+        assertEquals(4, a)
+    }
+
+    @Test
+    fun `odd alias proves an odd literal`() {
+        @Odd val a = 7
+        assertEquals(7, a)
+    }
+
+    @Test
+    fun `even plus one is odd`() {
+        // The aliases compose through the same residue analysis: even + 1 is provably odd.
+        @Even val e = 4
+        @Odd val o = e + 1
+        assertEquals(5, o)
+    }
+
+    @Test
+    fun `even alias defers to runtime via checkConstraint`() {
+        @Even val x = checkConstraint(6)
+        assertEquals(6, x)
+        assertFailsWith<ConstraintException> {
+            @Even val y = checkConstraint(7)
+            println(y)
+        }
+    }
+
     // -----------------------------------------------------------------------
     // These do NOT compile:
     //   @DivisibleBy(2, 0) val x = 5            // 5 mod 2 == 1: can never be valid
     //   @DivisibleBy(2, 0) val y = someInput    // residue unknown: needs checkConstraint
     //   @DivisibleBy(2, 0) var a = 4; a++       // a becomes 5, which is 1 mod 2
+    //   @Odd val z = 4                          // 4 is even: can never be valid
     // -----------------------------------------------------------------------
 }
