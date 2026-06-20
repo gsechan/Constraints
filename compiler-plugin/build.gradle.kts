@@ -15,4 +15,17 @@ dependencies {
     // The compiler API. `compileOnly` because at run time these classes are
     // already provided by the Kotlin compiler that loads this plugin.
     compileOnly("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.2.21")
+
+    // Tests. The compiler API is compileOnly above, so it must be added explicitly for
+    // the test source set (where FIR types are referenced/mocked).
+    testImplementation("org.jetbrains.kotlin:kotlin-compiler-embeddable:2.2.21")
+    testImplementation(platform("org.junit:junit-bom:5.11.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation(kotlin("test"))
+    testImplementation("io.mockk:mockk:1.13.13")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

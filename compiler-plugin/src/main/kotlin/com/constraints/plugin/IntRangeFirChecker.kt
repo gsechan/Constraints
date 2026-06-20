@@ -323,7 +323,8 @@ private fun isBareEscapeHatch(expr: FirExpression?): Boolean =
 // Interval inference over the resolved FIR tree
 // ===========================================================================
 
-private fun inferInterval(expr: FirExpression?, session: FirSession): Interval = when (expr) {
+// internal (not private) so the FIR-driven inference can be unit-tested with mocked nodes.
+internal fun inferInterval(expr: FirExpression?, session: FirSession): Interval = when (expr) {
     is FirLiteralExpression ->
         (expr.value as? Number)?.let { Interval.point(it.toLong()) } ?: Interval.UNKNOWN
 
@@ -394,7 +395,7 @@ private fun inferCall(call: FirFunctionCall, session: FirSession): Interval {
  * statically, else null. Tracks literals, congruence-preserving arithmetic, and reads of
  * variables declared `@DivisibleBy` with a divisor that [divisor] divides.
  */
-private fun inferResidue(expr: FirExpression?, divisor: Int, session: FirSession): Long? {
+internal fun inferResidue(expr: FirExpression?, divisor: Int, session: FirSession): Long? {
     if (divisor == 0) return null
     val d = divisor.toLong()
     return when (expr) {
@@ -433,7 +434,8 @@ private fun inferResidueCall(call: FirFunctionCall, divisor: Int, session: FirSe
     }
 }
 
-private inline fun combineResidues(a: Long?, b: Long?, op: (Long, Long) -> Long): Long? =
+// internal (not private) so the pure arithmetic can be unit-tested directly.
+internal inline fun combineResidues(a: Long?, b: Long?, op: (Long, Long) -> Long): Long? =
     if (a != null && b != null) op(a, b) else null
 
 /**
@@ -484,7 +486,7 @@ private fun FirAnnotation.comparableArguments(): Map<String, Any>? {
     return result
 }
 
-private fun comparableValue(expr: FirExpression): Any? = when (expr) {
+internal fun comparableValue(expr: FirExpression): Any? = when (expr) {
     is FirLiteralExpression -> expr.value
     is FirGetClassCall -> (expr.argument as? FirResolvedQualifier)?.classId
     else -> null
