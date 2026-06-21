@@ -43,23 +43,22 @@ private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Na
 class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
     override fun generate(moduleFragment: IrModuleFragment, pluginContext: IrPluginContext) {
         // checkConstraint is the single (generic) escape-hatch function.
-        val escapeHatches = pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE).toSet()
-        if (escapeHatches.isEmpty()) return
-        moduleFragment.transform(ConstraintTransformer(pluginContext, escapeHatches), null)
+        val checkConstraintFunction = pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE).single()
+        moduleFragment.transform(ConstraintTransformer(pluginContext, checkConstraintFunction), null)
     }
 }
 
 @UnsafeDuringIrConstructionAPI
 private class ConstraintTransformer(
     private val pluginContext: IrPluginContext,
-    private val escapeHatches: Set<IrSimpleFunctionSymbol>,
+    private val checkConstraintFunction: IrSimpleFunctionSymbol,
 ) : IrElementTransformerVoidWithContext() {
 
     override fun visitVariable(declaration: IrVariable): IrStatement {
         val result = super.visitVariable(declaration) as IrVariable
         val initializer = result.initializer
         if (initializer != null) {
-            result.initializer = applyConstraints(initializer, result.annotations)
+            result.initializer = ifCheckConstraintReplaceWithValidation(initializer, result.annotations)
         }
         return result
     }
@@ -67,29 +66,27 @@ private class ConstraintTransformer(
     override fun visitSetValue(expression: IrSetValue): IrExpression {
         val result = super.visitSetValue(expression) as IrSetValue
         val annotations = (result.symbol.owner as? IrVariable)?.annotations.orEmpty()
-        result.value = applyConstraints(result.value, annotations)
+        result.value = ifCheckConstraintReplaceWithValidation(result.value, annotations)
         return result
     }
 
     /**
-     * If [expr] is a bare escape-hatch call, replaces it with a block that evaluates the value
+     * If [expr] is a call to checkConstriants(), replaces it with a block that evaluates the value
      * once into a temporary, runs each constraint's `validate(value, annotation)` against it
      * (one per `@Constraint` on the value), then yields the temporary. The value is evaluated
-     * exactly once and is never transformed -- validators return nothing, so they can only pass
-     * or throw. If the value carries no constraints the call's argument is returned bare. Non
-     * escape-hatch expressions are left untouched.
+     * exactly once. If the value carries no constraints the call's argument is returned bare.
      */
-    private fun applyConstraints(expr: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
-        if (expr !is IrCall || expr.symbol !in escapeHatches) return expr
+    private fun ifCheckConstraintReplaceWithValidation(expr: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
+        if (expr !is IrCall || expr.symbol != checkConstraintFunction) return expr
         val value = expr.arguments[0] ?: return expr
-        val applications = annotations.flatMap { it.constraintApplications() }
-        if (applications.isEmpty()) return value
+        val constraintApplications = annotations.flatMap { it.getAllConstraints() }
+        if (constraintApplications.isEmpty()) return value
 
         val scope = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scope, expr.startOffset, expr.endOffset)
         return builder.irBlock(resultType = value.type) {
             val tmp = irTemporary(value) // evaluate the value once
-            for (application in applications) {
+            for (application in constraintApplications) {
                 +irCall(application.validator.validate).apply {
                     arguments[0] = irGetObject(application.validator.objectClass) // dispatch receiver
                     arguments[1] = irGet(tmp)                                     // value
@@ -107,15 +104,15 @@ private class ConstraintTransformer(
      * alias such as `@PositiveInt` it resolves recursively through the `@Constraint`-carrying
      * meta-annotation on its class (e.g. `@IntRange(1, MAX)`).
      */
-    private fun IrConstructorCall.constraintApplications(): List<ConstraintApplication> {
+    private fun IrConstructorCall.getAllConstraints(): List<ConstraintApplication> {
         val annotationClass = type.classOrNull?.owner ?: return emptyList()
         val result = mutableListOf<ConstraintApplication>()
-        annotationClass.getAnnotation(CONSTRAINT_FQ)?.resolveValidator()?.let {
+        annotationClass.getAnnotation(CONSTRAINT_FQ)?.getValidatorFromAnnotation()?.let {
             result += ConstraintApplication(it, this)
         }
         for (meta in annotationClass.annotations) {
             if (meta.type.classOrNull?.owner?.getAnnotation(CONSTRAINT_FQ) != null) {
-                result += meta.constraintApplications()
+                result += meta.getAllConstraints()
             }
         }
         return result
@@ -127,7 +124,7 @@ private class ConstraintTransformer(
      * error from the FIR `ConstraintValidatorChecker`, so this only returns null as a non-crash
      * guard for the exotic case of a constraint defined in a module the plugin didn't check.
      */
-    private fun IrConstructorCall.resolveValidator(): ValidatorRef? {
+    private fun IrConstructorCall.getValidatorFromAnnotation(): ValidatorRef? {
         val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
         if (validatorClass.owner.kind != ClassKind.OBJECT) return null
         val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" } ?: return null
