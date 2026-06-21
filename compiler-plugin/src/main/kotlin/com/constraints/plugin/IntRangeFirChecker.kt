@@ -44,7 +44,6 @@ private val LONG_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identi
 private val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
 private val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongDivisibleBy"))
 private val CONSTRAINED_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ConstrainedBy"))
-private val CHECK_INT_RANGE_ID = CallableId(FqName("com.constraints"), Name.identifier("checkIntRange"))
 private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
 // ===========================================================================
@@ -257,8 +256,8 @@ private fun verify(rhs: FirExpression, target: RangeTarget, context: CheckerCont
     // A possible divide-by-zero anywhere in the expression is a hard error in its
     // own right -- report it and stop (the range check would just add noise).
     if (reportDivisionByZero(rhs, target.domain, context, reporter)) return
-    // Single-arg `checkIntRange(value)` / `checkConstraint(value)`: explicit escape hatch; the IR
-    // backend fills its bounds from `target`, so accept it here without inferring a range.
+    // Single-arg `checkConstraint(value)`: explicit escape hatch; the IR backend fills its bounds
+    // from `target`, so accept it here without inferring a range.
     if (isBareEscapeHatch(rhs)) return
     val bounds = target.interval
     val inferred = inferInterval(rhs, context.session, target.domain)
@@ -348,10 +347,10 @@ private fun reportDivisionByZero(expr: FirExpression?, domain: NumericDomain, co
     }
 }
 
-/** True if [expr] is a bare 1-arg `checkIntRange(value)` or `checkConstraint(value)` escape hatch. */
+/** True if [expr] is a bare 1-arg `checkConstraint(value)` escape hatch. */
 private fun isBareEscapeHatch(expr: FirExpression?): Boolean =
     expr is FirFunctionCall &&
-        expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId in setOf(CHECK_INT_RANGE_ID, CHECK_CONSTRAINT_ID) &&
+        expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId == CHECK_CONSTRAINT_ID &&
         expr.arguments.size == 1
 
 // ===========================================================================
@@ -392,13 +391,6 @@ private fun FirExpression.resolvedVariableSymbolOrNull(): FirVariableSymbol<*>? 
 
 private fun inferCall(call: FirFunctionCall, session: FirSession, domain: NumericDomain): Interval {
     val callee = call.calleeReference.toResolvedNamedFunctionSymbol() ?: return Interval.UNKNOWN
-
-    // Escape hatch: checkIntRange(value, lo, hi) guarantees a result within [lo, hi].
-    if (callee.callableId == CHECK_INT_RANGE_ID) {
-        val lo = ((call.arguments.getOrNull(1) as? FirLiteralExpression)?.value as? Number)?.toLong()
-        val hi = ((call.arguments.getOrNull(2) as? FirLiteralExpression)?.value as? Number)?.toLong()
-        return if (lo != null && hi != null) Interval(lo, hi) else Interval.UNKNOWN
-    }
 
     // Integer arithmetic: receiver <op> arg, plus inc()/dec() from ++/--. Matched by name; the
     // [domain] (Int or Long) controls overflow/clamping so the over-approximation stays sound.

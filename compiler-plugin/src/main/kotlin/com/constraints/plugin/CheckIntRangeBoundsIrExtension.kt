@@ -31,36 +31,20 @@ import org.jetbrains.kotlin.name.Name
 
 private val COMPILE_TIME_CONSTRAINT_FQ = FqName("com.constraints.CompileTimeConstraint")
 private val CONSTRAINED_BY_FQ = FqName("com.constraints.ConstrainedBy")
-private val CHECK_INT_RANGE_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkIntRange"))
 private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
 /**
- * Implements the runtime escape hatches `checkIntRange(value)` and
- * `checkConstraint(value)` generically.
+ * Implements the runtime escape hatch`checkConstraint(value)` generically.
  *
  * A bare 1-arg call is replaced by a block that evaluates the value once and runs each
  * constraint's validator against it -- one per constraint on the value:
  *
- *  - `@CompileTimeConstraint(V::class)` constraints (e.g. `@IntRange`):
- *      `@IntRange(0,10) val a = checkConstraint(v)`  ->  `{ val t = v; IntRangeValidator.validate(t, IntRange(0,10)); t }`
- *  - constraints whose annotation class is meta-annotated `@ConstrainedBy(V::class)` (the
- *    annotation instance is passed, so a data-carrying constraint can read its parameters):
- *      `@InverseRange(0,10) val a = checkConstraint(v)`  ->  `{ val t = v; InverseRangeValidator.validate(t, InverseRange(0,10)); t }`
- *
- * For `@ConstrainedBy` this escape hatch is the *only* way to assign: the FIR checker
- * rejects any other RHS, since a runtime validator can never be proven statically. No
- * constraint is otherwise special-cased; adding a new `@CompileTimeConstraint` works with
- * no change to this pass.
  */
 @OptIn(UnsafeDuringIrConstructionAPI::class)
 class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
     override fun generate(moduleFragment: IrModuleFragment, pluginContext: IrPluginContext) {
-        val escapeHatches = buildSet {
-            pluginContext.referenceFunctions(CHECK_INT_RANGE_CALLABLE)
-                .firstOrNull { it.owner.parameters.size == 1 }?.let { add(it) }
-            // checkConstraint is a single generic function; reference it by callable id.
-            addAll(pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE))
-        }
+        // checkConstraint is the single (generic) escape-hatch function.
+        val escapeHatches = pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE).toSet()
         if (escapeHatches.isEmpty()) return
         moduleFragment.transform(ConstraintTransformer(pluginContext, escapeHatches), null)
     }

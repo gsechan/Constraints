@@ -38,14 +38,14 @@ class IntRangePluginTest {
     }
 
     @Test
-    fun `dynamic value via checkIntRange compiles`() {
+    fun `dynamic value via checkConstraint compiles`() {
         val raw = 7
         @IntRange(0, 10) var a = checkConstraint(raw)   // escape hatch: checked at runtime
         assertEquals(7, a)
     }
 
     @Test
-    fun `checkIntRange throws at runtime when out of range`() {
+    fun `checkConstraint throws at runtime when out of range`() {
         assertFailsWith<ConstraintException> {
             @IntRange(0, 10) var a = checkConstraint(42)
             println(a)
@@ -60,14 +60,14 @@ class IntRangePluginTest {
     }
 
     @Test
-    fun `checkIntRange for addition works if sum is in range`() {
+    fun `checkConstraint for addition works if sum is in range`() {
         @IntRange(0,10) val a = 2
         @IntRange(1,10) val b = 3
         @IntRange(0,10) val c = checkConstraint(a+b)
     }
 
     @Test
-    fun `checkIntRange for addition throws if sum is out of range`() {
+    fun `checkConstraint for addition throws if sum is out of range`() {
         @IntRange(0,10) val a = 10
         @IntRange(1,10) val b = 3
         assertThrows<ConstraintException> {
@@ -94,6 +94,6 @@ class IntRangePluginTest {
     //   @IntRange(0, 10) var c = n   // ERROR: the range of n cannot be determined statically
     //
     // The fix in each case is an explicit runtime check, e.g.:
-    //   a = checkIntRange(a + 1, 0, 10)
+    //   a = checkConstraint(a + 1)
     // -----------------------------------------------------------------------
 }
