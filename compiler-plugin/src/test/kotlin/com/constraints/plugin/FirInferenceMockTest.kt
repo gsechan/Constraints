@@ -42,14 +42,14 @@ class FirInferenceMockTest {
 
     @Test
     fun `inferResidue reduces a literal modulo the divisor (floored)`() {
-        assertEquals(1L, inferResidue(intLiteral(7), 3L, session)) // 7 mod 3 == 1
-        assertEquals(2L, inferResidue(intLiteral(-1), 3L, session)) // floored: -1 mod 3 == 2
+        assertEquals(1L, inferRemainder(intLiteral(7), 3L, session)) // 7 mod 3 == 1
+        assertEquals(2L, inferRemainder(intLiteral(-1), 3L, session)) // floored: -1 mod 3 == 2
     }
 
     @Test
     fun `inferResidue is null for a zero divisor or absent expression`() {
-        assertNull(inferResidue(intLiteral(7), 0L, session))
-        assertNull(inferResidue(null, 3L, session))
+        assertNull(inferRemainder(intLiteral(7), 0L, session))
+        assertNull(inferRemainder(null, 3L, session))
     }
 
     @Test

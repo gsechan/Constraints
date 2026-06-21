@@ -178,7 +178,7 @@ private fun verifyConstraints(
     if (required.isEmpty() && range == null && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
-    if (isBareEscapeHatch(rhs)) return
+    if (isCheckConstraints(rhs)) return
 
     // Runtime-only constraints first; if one is unsatisfied, stop (don't pile on a range/divisibility error).
     if (verifyRuntimeConstraints(required, rhs, context, reporter)) return
@@ -200,7 +200,7 @@ private fun verifyRuntimeConstraints(
     context: CheckerContext,
     reporter: DiagnosticReporter,
 ): Boolean {
-    if (required.isEmpty() || isBareEscapeHatch(rhs)) return false
+    if (required.isEmpty() || isCheckConstraints(rhs)) return false
     val missing = required - knownConstraints(rhs, context.session)
     if (missing.isEmpty()) return false
     val names = missing.joinToString(", ") { it.render() }
@@ -237,7 +237,7 @@ private fun verifyRange(rhs: FirExpression, target: RangeTarget, context: Checke
     if (reportDivisionByZero(rhs, target.domain, context, reporter)) return
     // Single-arg `checkConstraint(value)`: explicit escape hatch; the IR backend fills its bounds
     // from `target`, so accept it here without inferring a range.
-    if (isBareEscapeHatch(rhs)) return
+    if (isCheckConstraints(rhs)) return
     val bounds = target.interval
     val inferred = inferInterval(rhs, context.session, target.domain)
     if (inferred.subsetOf(bounds)) return // statically proven in range -> no runtime check needed
@@ -264,7 +264,7 @@ private fun verifyRange(rhs: FirExpression, target: RangeTarget, context: Checke
 /** Reports an error unless [rhs] is provably congruent to [d]'s remainder modulo its divisor. */
 private fun verifyDivisibility(rhs: FirExpression, d: Divisibility, context: CheckerContext, reporter: DiagnosticReporter) {
     // Explicit escape hatch: the IR backend injects the validator, so accept without inferring.
-    if (isBareEscapeHatch(rhs)) return
+    if (isCheckConstraints(rhs)) return
     if (d.divisor == 0L) {
         reporter.reportOn(
             rhs.source,
@@ -275,7 +275,7 @@ private fun verifyDivisibility(rhs: FirExpression, d: Divisibility, context: Che
         return
     }
     val expected = d.remainder.mod(d.divisor)
-    val residue = inferResidue(rhs, d.divisor, context.session)
+    val residue = inferRemainder(rhs, d.divisor, context.session)
     if (residue == expected) return // statically proven -> no runtime check needed
 
     val label = "${d.label}(${d.divisor}, ${d.remainder})"
@@ -327,33 +327,10 @@ private fun reportDivisionByZero(expr: FirExpression?, domain: NumericDomain, co
 }
 
 /** True if [expr] is a bare 1-arg `checkConstraint(value)` escape hatch. */
-private fun isBareEscapeHatch(expr: FirExpression?): Boolean =
+private fun isCheckConstraints(expr: FirExpression?): Boolean =
     expr is FirFunctionCall &&
         expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId == CHECK_CONSTRAINT_ID &&
         expr.arguments.size == 1
-
-// ===========================================================================
-// Interval inference over the resolved FIR tree
-// ===========================================================================
-
-// internal (not private) so the FIR-driven inference can be unit-tested with mocked nodes.
-internal fun inferInterval(expr: FirExpression?, session: FirSession, domain: NumericDomain): Interval = when (expr) {
-    is FirLiteralExpression ->
-        (expr.value as? Number)?.let { Interval.point(it.toLong()) } ?: Interval.UNKNOWN
-
-    is FirFunctionCall -> inferCall(expr, session, domain)
-
-    // A bare variable read: use its declared range (a sound invariant, since every write to it is
-    // itself checked). Unannotated variables are unknown.
-    is FirPropertyAccessExpression ->
-        expr.calleeReference.toResolvedVariableSymbol()?.rangeTarget(session)?.interval ?: Interval.UNKNOWN
-
-    // `a++` / `a += ...` desugar so the variable read becomes this reference wrapper.
-    is FirDesugaredAssignmentValueReferenceExpression ->
-        inferInterval(expr.expressionRef.value, session, domain)
-
-    else -> Interval.UNKNOWN
-}
 
 /**
  * Resolves the variable an lValue refers to, unwrapping the desugared reference
@@ -366,91 +343,6 @@ private fun FirExpression.resolvedVariableSymbolOrNull(): FirVariableSymbol<*>? 
         else -> null
     }
     return access?.calleeReference?.toResolvedVariableSymbol()
-}
-
-private fun inferCall(call: FirFunctionCall, session: FirSession, domain: NumericDomain): Interval {
-    val callee = call.calleeReference.toResolvedNamedFunctionSymbol() ?: return Interval.UNKNOWN
-
-    // Integer arithmetic: receiver <op> arg, plus inc()/dec() from ++/--. Matched by name; the
-    // [domain] (Int or Long) controls overflow/clamping so the over-approximation stays sound.
-    val receiver = inferInterval(call.dispatchReceiver ?: call.explicitReceiver, session, domain)
-    fun arg() = inferInterval(call.arguments.firstOrNull(), session, domain)
-    return when (callee.name.asString()) {
-        "inc" -> domain.plus(receiver, Interval.point(1))
-        "dec" -> domain.minus(receiver, Interval.point(1))
-        "unaryMinus" -> domain.minus(Interval.point(0), receiver)
-        "plus" -> domain.plus(receiver, arg())
-        "minus" -> domain.minus(receiver, arg())
-        "times" -> domain.times(receiver, arg())
-        "div" -> domain.div(receiver, arg())
-        "rem" -> domain.rem(receiver, arg())
-        // Any other call: trust a range on its return type, if it has one.
-        else -> callee.returnTypeRange(session)?.interval ?: Interval.UNKNOWN
-    }
-}
-
-// ===========================================================================
-// Residue inference (for @DivisibleBy) -- the value's residue modulo a divisor.
-//
-// Uses *floored* modulo (Kotlin's `.mod`), i.e. true congruence classes, so residues compose
-// soundly through +, -, *: (a OP b) mod n == ((a mod n) OP (b mod n)) mod n. This is why the
-// constraint must use floored modulo at runtime too -- `%` would not be sound here.
-// ===========================================================================
-
-/**
- * The residue of [expr] modulo [divisor] (floored, in `[0, divisor)`) if it can be determined
- * statically, else null. Tracks literals, congruence-preserving arithmetic, and reads of
- * variables declared `@DivisibleBy` with a divisor that [divisor] divides.
- */
-internal fun inferResidue(expr: FirExpression?, divisor: Long, session: FirSession): Long? {
-    if (divisor == 0L) return null
-    return when (expr) {
-        is FirLiteralExpression -> (expr.value as? Number)?.toLong()?.mod(divisor)
-
-        // A bare variable read: if it is declared @DivisibleBy(d', r') and `divisor` divides d',
-        // then `value ≡ r' (mod divisor)` (a sound invariant, since every write to it is checked).
-        is FirPropertyAccessExpression -> {
-            val known = expr.calleeReference.toResolvedVariableSymbol()?.divisibleBy(session) ?: return null
-            if (known.divisor != 0L && known.divisor % divisor == 0L) known.remainder.mod(divisor) else null
-        }
-
-        // `a++` / `a += ...` desugar so the variable read becomes this reference wrapper.
-        is FirDesugaredAssignmentValueReferenceExpression -> inferResidue(expr.expressionRef.value, divisor, session)
-
-        is FirFunctionCall -> inferResidueCall(expr, divisor, session)
-
-        else -> null
-    }
-}
-
-private fun inferResidueCall(call: FirFunctionCall, divisor: Long, session: FirSession): Long? {
-    val callee = call.calleeReference.toResolvedNamedFunctionSymbol() ?: return null
-    val receiver = inferResidue(call.dispatchReceiver ?: call.explicitReceiver, divisor, session)
-    val arg = inferResidue(call.arguments.firstOrNull(), divisor, session)
-    return when (callee.name.asString()) {
-        "inc" -> residueOp(receiver, 1L, divisor) { a, b -> Math.addExact(a, b) }
-        "dec" -> residueOp(receiver, 1L, divisor) { a, b -> Math.subtractExact(a, b) }
-        "unaryMinus" -> residueOp(0L, receiver, divisor) { a, b -> Math.subtractExact(a, b) }
-        "plus" -> residueOp(receiver, arg, divisor) { a, b -> Math.addExact(a, b) }
-        "minus" -> residueOp(receiver, arg, divisor) { a, b -> Math.subtractExact(a, b) }
-        "times" -> residueOp(receiver, arg, divisor) { a, b -> Math.multiplyExact(a, b) }
-        // div and rem do not preserve congruence; any other call is opaque.
-        else -> null
-    }
-}
-
-/**
- * Combines two known residues with [op], reducing the result modulo [divisor] (floored). Returns
- * null if either residue is unknown, or if [op] overflows Long (possible for a large Long divisor)
- * -- so an unprovable case soundly falls back to `checkConstraint`. internal for unit testing.
- */
-internal fun residueOp(a: Long?, b: Long?, divisor: Long, op: (Long, Long) -> Long): Long? {
-    if (a == null || b == null) return null
-    return try {
-        op(a, b).mod(divisor)
-    } catch (e: ArithmeticException) {
-        null
-    }
 }
 
 /**
@@ -513,14 +405,14 @@ internal fun comparableValue(expr: FirExpression): Any? = when (expr) {
 }
 
 /** A range constraint plus the numeric domain it lives in (so interval math clamps to the right bounds). */
-private class RangeTarget(val interval: Interval, val domain: NumericDomain, val label: String)
+internal class RangeTarget(val interval: Interval, val domain: NumericDomain, val label: String)
 
 /** The range constraint (`@IntRange` or `@LongRange`) on this variable, directly or via an alias. */
-private fun FirVariableSymbol<*>.rangeTarget(session: FirSession): RangeTarget? =
+internal fun FirVariableSymbol<*>.rangeTarget(session: FirSession): RangeTarget? =
     resolvedAnnotationsWithArguments.firstNotNullOfOrNull { it.rangeTarget(session) }
 
 /** The range constraint on this callable's return type, directly or via an alias. */
-private fun FirCallableSymbol<*>.returnTypeRange(session: FirSession): RangeTarget? =
+internal fun FirCallableSymbol<*>.returnTypeRange(session: FirSession): RangeTarget? =
     resolvedReturnType.customAnnotations.firstNotNullOfOrNull { it.rangeTarget(session) }
 
 /**
@@ -549,10 +441,10 @@ private fun readInterval(range: FirAnnotation): Interval? {
 }
 
 /** A divisibility constraint: the value must be congruent to [remainder] modulo [divisor]. */
-private data class Divisibility(val divisor: Long, val remainder: Long, val label: String)
+internal data class Divisibility(val divisor: Long, val remainder: Long, val label: String)
 
 /** The divisibility constraint (`@DivisibleBy` or `@LongDivisibleBy`) on this variable, directly or via an alias. */
-private fun FirVariableSymbol<*>.divisibleBy(session: FirSession): Divisibility? =
+internal fun FirVariableSymbol<*>.divisibleBy(session: FirSession): Divisibility? =
     resolvedAnnotationsWithArguments.firstNotNullOfOrNull { it.divisibilityArgs(session) }
 
 /** The divisibility constraint on this callable's return type, directly or via an alias. */
