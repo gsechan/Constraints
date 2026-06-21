@@ -27,6 +27,7 @@ object ConstraintErrors : KtDiagnosticsContainer() {
     val INTRANGE_DIVISION_BY_ZERO by error1<PsiElement, String>()
     val CONSTRAINT_NOT_VALIDATED by error1<PsiElement, String>()
     val DIVISIBLE_BY_NOT_VERIFIED by error1<PsiElement, String>()
+    val CONSTRAINT_VALIDATOR_INVALID by error1<PsiElement, String>()
 
     override fun getRendererFactory(): BaseDiagnosticRendererFactory = ConstraintErrorRenderers
 }
@@ -41,5 +42,6 @@ private object ConstraintErrorRenderers : BaseDiagnosticRendererFactory() {
         it.put(ConstraintErrors.INTRANGE_DIVISION_BY_ZERO, "{0}", CommonRenderers.STRING)
         it.put(ConstraintErrors.CONSTRAINT_NOT_VALIDATED, "{0}", CommonRenderers.STRING)
         it.put(ConstraintErrors.DIVISIBLE_BY_NOT_VERIFIED, "{0}", CommonRenderers.STRING)
+        it.put(ConstraintErrors.CONSTRAINT_VALIDATOR_INVALID, "{0}", CommonRenderers.STRING)
     }
 }

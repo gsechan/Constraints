@@ -178,5 +178,9 @@ class ConstraintPluginTest {
     //   @InverseRange(0, 10) var y = 20                        // error: opaque literal, not validated
     //   @InverseRange(5, 20) val z = inverseRange0to10Value    // error: arguments differ (5,20) vs (0,10)
     //   x = x + 1                                              // error: arithmetic isn't tracked
+    //
+    // And a malformed constraint *definition* is a compile error at the definition site:
+    //   class BadValidator : Validator<Int, Bad> { ... }      // a class, not an object
+    //   @Constraint(BadValidator::class) annotation class Bad // error: validator must be a Kotlin object
     // -----------------------------------------------------------------------
 }

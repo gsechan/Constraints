@@ -1,5 +1,6 @@
 package com.constraints.plugin
 
+import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.diagnostics.DiagnosticReporter
 import org.jetbrains.kotlin.diagnostics.reportOn
 import org.jetbrains.kotlin.fir.FirSession
@@ -7,6 +8,8 @@ import org.jetbrains.kotlin.fir.analysis.checkers.MppCheckerKind
 import org.jetbrains.kotlin.fir.analysis.checkers.context.CheckerContext
 import org.jetbrains.kotlin.fir.analysis.checkers.declaration.DeclarationCheckers
 import org.jetbrains.kotlin.fir.analysis.checkers.declaration.FirPropertyChecker
+import org.jetbrains.kotlin.fir.analysis.checkers.declaration.FirRegularClassChecker
+import org.jetbrains.kotlin.fir.declarations.FirRegularClass
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.ExpressionCheckers
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirVariableAssignmentChecker
 import org.jetbrains.kotlin.fir.analysis.extensions.FirAdditionalCheckersExtension
@@ -160,6 +163,7 @@ class IntRangeFirExtensionRegistrar : FirExtensionRegistrar() {
 class IntRangeCheckersExtension(session: FirSession) : FirAdditionalCheckersExtension(session) {
     override val declarationCheckers = object : DeclarationCheckers() {
         override val propertyCheckers = setOf(IntRangePropertyChecker)
+        override val regularClassCheckers = setOf(ConstraintValidatorChecker)
     }
 
     override val expressionCheckers = object : ExpressionCheckers() {
@@ -194,6 +198,40 @@ object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common)
         function.symbol.returnTypeRange(context.session)?.let { verify(expression.result, it, context, reporter) }
         function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(expression.result, it, context, reporter) }
     }
+}
+
+/**
+ * Validity of a constraint *definition*: an annotation class meta-annotated `@Constraint(V::class)`
+ * must name a validator that is a Kotlin `object` (the plugin runs its singleton instance). A
+ * non-object validator is a compile error reported here -- at the definition -- rather than a
+ * constraint that silently does nothing at runtime. (`validate` is guaranteed by the
+ * `KClass<out Validator<*, *>>` bound, so only object-ness needs checking.)
+ */
+object ConstraintValidatorChecker : FirRegularClassChecker(MppCheckerKind.Common) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(declaration: FirRegularClass) {
+        val constraint = declaration.symbol.resolvedAnnotationsWithArguments.firstOrNull {
+            it.toAnnotationClassId(context.session) == CONSTRAINT_CLASS_ID
+        } ?: return
+        val validatorId = constraint.validatorClassId() ?: return
+        val validator = context.session.symbolProvider
+            .getClassLikeSymbolByClassId(validatorId) as? FirRegularClassSymbol ?: return
+        if (validator.classKind != ClassKind.OBJECT) {
+            reporter.reportOn(
+                constraint.source,
+                ConstraintErrors.CONSTRAINT_VALIDATOR_INVALID,
+                "@Constraint validator '${validatorId.shortClassName.asString()}' must be a Kotlin object (a singleton).",
+                context,
+            )
+        }
+    }
+}
+
+/** Reads the `validator = V::class` argument of a `@Constraint` annotation as the class id of `V`. */
+private fun FirAnnotation.validatorClassId(): ClassId? {
+    val arg = argumentMapping.mapping.entries.firstOrNull { it.key.asString() == "validator" }?.value
+    val getClass = arg as? FirGetClassCall ?: return null
+    return (getClass.argument as? FirResolvedQualifier)?.classId
 }
 
 /**

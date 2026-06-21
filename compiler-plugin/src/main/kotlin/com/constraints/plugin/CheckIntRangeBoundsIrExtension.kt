@@ -122,25 +122,15 @@ private class ConstraintTransformer(
     }
 
     /**
-     * Reads the validator class from a `@Constraint(V::class)` construction, checks it is a Kotlin
-     * `object`, and locates its `validate` function. Returns null (and warns) if the validator is
-     * unusable, so a bad validator degrades gracefully instead of crashing the compiler.
+     * Reads the validator class from a `@Constraint(V::class)` construction and locates its
+     * `validate` function. A non-object validator (or a missing `validate`) is already a compile
+     * error from the FIR `ConstraintValidatorChecker`, so this only returns null as a non-crash
+     * guard for the exotic case of a constraint defined in a module the plugin didn't check.
      */
     private fun IrConstructorCall.resolveValidator(): ValidatorRef? {
         val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
-        if (validatorClass.owner.kind != ClassKind.OBJECT) {
-            System.err.println(
-                "constraints plugin: @Constraint validator '${validatorClass.owner.name}' must be a Kotlin object — check skipped"
-            )
-            return null
-        }
-        val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" }
-        if (validate == null) {
-            System.err.println(
-                "constraints plugin: @Constraint validator '${validatorClass.owner.name}' has no validate(...) function — check skipped"
-            )
-            return null
-        }
+        if (validatorClass.owner.kind != ClassKind.OBJECT) return null
+        val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" } ?: return null
         return ValidatorRef(validatorClass, validate.symbol)
     }
 }
