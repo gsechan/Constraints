@@ -3,6 +3,7 @@ package com.constraints.demo
 import com.constraints.ConstraintException
 import com.constraints.DivisibleBy
 import com.constraints.Even
+import com.constraints.IntRange
 import com.constraints.Odd
 import com.constraints.checkConstraint
 import org.junit.jupiter.api.Test
@@ -117,11 +118,46 @@ class DivisibleByPluginTest {
         }
     }
 
+    // --- @IntRange and @DivisibleBy on the same value: both are checked ---
+
+    @Test
+    fun `both constraints proven at compile time`() {
+        // 4 is in [0, 10] AND 4 mod 2 == 0 -- both proofs pass, no runtime check injected.
+        @IntRange(0, 10) @DivisibleBy(2, 0) val a = 4
+        assertEquals(4, a)
+    }
+
+    @Test
+    fun `both constraints pass at runtime`() {
+        @IntRange(0, 10) @DivisibleBy(2, 0) val x = checkConstraint(4)
+        assertEquals(4, x)
+    }
+
+    @Test
+    fun `intRange is still checked when divisibility passes`() {
+        // 12 IS divisible by 2, so the only thing that can reject it is the @IntRange check.
+        assertFailsWith<ConstraintException> {
+            @IntRange(0, 10) @DivisibleBy(2, 0) val x = checkConstraint(12)
+            println(x)
+        }
+    }
+
+    @Test
+    fun `divisibility is still checked when intRange passes`() {
+        // 5 IS in [0, 10], so the only thing that can reject it is the @DivisibleBy check.
+        assertFailsWith<ConstraintException> {
+            @IntRange(0, 10) @DivisibleBy(2, 0) val x = checkConstraint(5)
+            println(x)
+        }
+    }
+
     // -----------------------------------------------------------------------
     // These do NOT compile:
     //   @DivisibleBy(2, 0) val x = 5            // 5 mod 2 == 1: can never be valid
     //   @DivisibleBy(2, 0) val y = someInput    // residue unknown: needs checkConstraint
     //   @DivisibleBy(2, 0) var a = 4; a++       // a becomes 5, which is 1 mod 2
+    //   @IntRange(0, 10) @DivisibleBy(2, 0) val z = 12   // 12 mod 2 == 0 but 12 > 10: IntRange fails
+    //   @IntRange(0, 10) @DivisibleBy(2, 0) val w = 5    // 5 in [0,10] but 5 mod 2 == 1: DivisibleBy fails
     //   @Odd val z = 4                          // 4 is even: can never be valid
     // -----------------------------------------------------------------------
 }
