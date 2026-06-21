@@ -3,22 +3,14 @@ package com.constraints
 /**
  * Contract for `@ConstrainedBy` validators.
  *
- * Implement as a Kotlin `object` (singleton). The constraint annotation that links to
- * this validator via `@ConstrainedBy(...)` (e.g. `@InverseRange(0, 10)`) is passed to
- * [validate] as [annotation], so the validator can read its parameters. [A] is that
- * annotation's type.
+ * Validators confirm whether or not a value is allowed for an instance of a constraint.
+ * Validators must be stateless and not use outside values to validate-  using state or
+ * other values may break static compile time analysis, which assumes that two variables
+ * with equal annotations and the same validator are the same constraint.
  *
- * The plugin injects the [validate] call inside the `checkConstraint(value)` escape
- * hatch. [validate] returns nothing: it should return normally when the value is valid, or
- * throw (e.g. [ConstraintException]) when the constraint is broken. It cannot transform the
- * value -- a constraint validates, it does not coerce.
- *
- * A validator MUST be a pure, stateless predicate on `(value, annotation)`: its outcome
- * (pass or throw) must depend only on those arguments, with no mutable state. The plugin
- * relies on this to elide redundant checks -- it treats `(validator, annotation-and-its-
- * arguments)` as the identity of the constraint, so a value already known to satisfy an
- * identical constraint (e.g. read from another variable with the same annotation and
- * arguments) is assigned without re-checking. A stateful validator would make that unsound.
+ * validate must throw a ConstraintException if the value passed in is not valid for the
+ * constraint.  validate will be called whenever checkConstraint is called for an annotation
+ * which specifies this as the validator.
  */
 interface Validator<T, A : Annotation> {
     fun validate(value: T, annotation: A)

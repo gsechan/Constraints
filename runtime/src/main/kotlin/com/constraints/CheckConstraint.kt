@@ -8,9 +8,12 @@ package com.constraints
  *
  * Only valid as the direct initializer/assignment of a constrained value; anywhere
  * else the plugin can't supply the constraints and it throws.
+ *
+ * Generic in the value type [T], so it works for any constrained type (`Int` for `@IntRange`,
+ * `Long` for `@LongRange`, ...) -- the plugin reads the actual type from the call site.
  */
 @Suppress("UNUSED_PARAMETER")
-fun checkConstraint(value: Int): Int =
+fun <T> checkConstraint(value: T): T =
     throw IllegalStateException(
         "checkConstraint(value) must initialise a constrained value so the compiler can supply its constraints"
     )

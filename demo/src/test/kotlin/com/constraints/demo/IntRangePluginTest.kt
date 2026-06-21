@@ -3,7 +3,6 @@ package com.constraints.demo
 import com.constraints.ConstraintException
 import com.constraints.IntRange
 import com.constraints.checkConstraint
-import com.constraints.checkIntRange
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertEquals
@@ -41,14 +40,14 @@ class IntRangePluginTest {
     @Test
     fun `dynamic value via checkIntRange compiles`() {
         val raw = 7
-        @IntRange(0, 10) var a = checkIntRange(raw)   // escape hatch: checked at runtime
+        @IntRange(0, 10) var a = checkConstraint(raw)   // escape hatch: checked at runtime
         assertEquals(7, a)
     }
 
     @Test
     fun `checkIntRange throws at runtime when out of range`() {
         assertFailsWith<ConstraintException> {
-            @IntRange(0, 10) var a = checkIntRange(42)
+            @IntRange(0, 10) var a = checkConstraint(42)
             println(a)
         }
     }
@@ -64,7 +63,7 @@ class IntRangePluginTest {
     fun `checkIntRange for addition works if sum is in range`() {
         @IntRange(0,10) val a = 2
         @IntRange(1,10) val b = 3
-        @IntRange(0,10) val c = checkIntRange(a+b)
+        @IntRange(0,10) val c = checkConstraint(a+b)
     }
 
     @Test
@@ -72,7 +71,7 @@ class IntRangePluginTest {
         @IntRange(0,10) val a = 10
         @IntRange(1,10) val b = 3
         assertThrows<ConstraintException> {
-            @IntRange(0, 10) val c = checkIntRange(a + b)
+            @IntRange(0, 10) val c = checkConstraint(a + b)
         }
     }
 

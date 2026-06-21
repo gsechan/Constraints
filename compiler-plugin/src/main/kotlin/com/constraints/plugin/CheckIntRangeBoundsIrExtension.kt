@@ -58,7 +58,8 @@ class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
         val escapeHatches = buildSet {
             pluginContext.referenceFunctions(CHECK_INT_RANGE_CALLABLE)
                 .firstOrNull { it.owner.parameters.size == 1 }?.let { add(it) }
-            pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE).firstOrNull()?.let { add(it) }
+            // checkConstraint is a single generic function; reference it by callable id.
+            addAll(pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE))
         }
         if (escapeHatches.isEmpty()) return
         moduleFragment.transform(ConstraintTransformer(pluginContext, escapeHatches), null)

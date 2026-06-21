@@ -17,4 +17,4 @@ import kotlin.reflect.KClass
  */
 @Target(AnnotationTarget.ANNOTATION_CLASS)
 @Retention(AnnotationRetention.BINARY)
-annotation class CompileTimeConstraint(val validator: KClass<out ConstraintValidator<*>>)
+annotation class CompileTimeConstraint(val validator: KClass<out ConstraintValidator<*, *>>)

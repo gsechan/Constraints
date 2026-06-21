@@ -1,20 +1,12 @@
 package com.constraints
 
 /**
- * Marks an Int value as belonging to a residue class: `value.mod(divisor) == remainder`.
+ * Marks an Int value as being divisible by the divisor with exactly the requested remainder.
  *
- * Modulo is *floored* (Kotlin's [Int.mod]) -- the canonical remainder in `[0, divisor)` --
- * so the constraint expresses true mathematical congruence and composes through arithmetic.
- * This differs from `%` only for negative values: `-1` satisfies `@DivisibleBy(3, 2)` because
- * `-1` is congruent to `2` modulo `3`, even though `-1 % 3 == -1`.
+ * This is the same as % for numbers >=0.  For negative numbers, the remainer is the distance
+ * to the next most negative multiple of divisor.  So -1 with a divisor of 3 would be a remainder of 2
+ * This was chosen to allow greater compile time analysis, as the expected use of this is on positive numbers
  *
- * The compiler plugin checks this at COMPILE TIME wherever it can determine the value's
- * residue modulo `divisor`: an integer literal, a value already declared `@DivisibleBy` with a
- * compatible divisor, or congruence-preserving arithmetic (`+`, `-`, `*`, `++`, `--`, unary
- * minus). Otherwise it is a compile error -- wrap the value in `checkConstraint(value)` to
- * defer the check to runtime.
- *
- * `remainder` defaults to 0, so `@DivisibleBy(3)` reads as "divisible by 3".
  */
 @CompileTimeConstraint(DivisibleByValidator::class)
 @Target(
@@ -23,7 +15,7 @@ package com.constraints
     AnnotationTarget.FIELD,
     AnnotationTarget.VALUE_PARAMETER,
     AnnotationTarget.TYPE,
-    AnnotationTarget.ANNOTATION_CLASS, // so it can be used as an alias meta-annotation
+    AnnotationTarget.ANNOTATION_CLASS,
 )
 @Retention(AnnotationRetention.BINARY) // BINARY so the plugin can read it off an alias class cross-module
 annotation class DivisibleBy(val divisor: Int, val remainder: Int = 0)

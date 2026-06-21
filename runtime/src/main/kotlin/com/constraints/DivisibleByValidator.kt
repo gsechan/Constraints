@@ -4,7 +4,7 @@ package com.constraints
  * Runtime validator for [DivisibleBy]. Uses floored modulo ([Int.mod]) so it agrees exactly
  * with the compiler plugin's compile-time congruence check.
  */
-object DivisibleByValidator : ConstraintValidator<DivisibleBy> {
+object DivisibleByValidator : ConstraintValidator<Int, DivisibleBy> {
     override fun validate(value: Int, annotation: DivisibleBy) {
         if (annotation.divisor == 0) {
             throw ConstraintException("@DivisibleBy divisor must be non-zero")

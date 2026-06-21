@@ -32,24 +32,24 @@ class FirInferenceMockTest {
 
     @Test
     fun `inferInterval reads an integer literal as a point interval`() {
-        assertEquals(Interval.point(7), inferInterval(intLiteral(7), session))
+        assertEquals(Interval.point(7), inferInterval(intLiteral(7), session, NumericDomain.INT))
     }
 
     @Test
     fun `inferInterval is UNKNOWN for an absent expression`() {
-        assertEquals(Interval.UNKNOWN, inferInterval(null, session))
+        assertEquals(Interval.UNKNOWN, inferInterval(null, session, NumericDomain.INT))
     }
 
     @Test
     fun `inferResidue reduces a literal modulo the divisor (floored)`() {
-        assertEquals(1L, inferResidue(intLiteral(7), 3, session)) // 7 mod 3 == 1
-        assertEquals(2L, inferResidue(intLiteral(-1), 3, session)) // floored: -1 mod 3 == 2
+        assertEquals(1L, inferResidue(intLiteral(7), 3L, session)) // 7 mod 3 == 1
+        assertEquals(2L, inferResidue(intLiteral(-1), 3L, session)) // floored: -1 mod 3 == 2
     }
 
     @Test
     fun `inferResidue is null for a zero divisor or absent expression`() {
-        assertNull(inferResidue(intLiteral(7), 0, session))
-        assertNull(inferResidue(null, 3, session))
+        assertNull(inferResidue(intLiteral(7), 0L, session))
+        assertNull(inferResidue(null, 3L, session))
     }
 
     @Test
