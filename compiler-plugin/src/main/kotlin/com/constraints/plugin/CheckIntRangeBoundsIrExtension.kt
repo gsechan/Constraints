@@ -121,11 +121,11 @@ private class ConstraintTransformer(
         return result
     }
 
-    /** Resolves the `KClass<out ConstraintValidator>` of a `@CompileTimeConstraint` to its object + validate fn. */
-    private fun IrConstructorCall.validatorRef(): ConstraintValidatorRef? {
+    /** Resolves the `KClass<out Validator>` of a `@CompileTimeConstraint` to its object + validate fn. */
+    private fun IrConstructorCall.validatorRef(): ValidatorRef? {
         val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
         val validate = validatorClass.owner.functions.firstOrNull { it.name.asString() == "validate" } ?: return null
-        return ConstraintValidatorRef(validatorClass, validate.symbol)
+        return ValidatorRef(validatorClass, validate.symbol)
     }
 
     /**
@@ -145,7 +145,7 @@ private class ConstraintTransformer(
      * `object`, and locates its `validate` function. Returns null (and warns) if the validator is
      * unusable, so bad validators degrade gracefully instead of crashing the compiler.
      */
-    private fun IrConstructorCall.resolveConstrainedByValidator(): ConstraintValidatorRef? {
+    private fun IrConstructorCall.resolveConstrainedByValidator(): ValidatorRef? {
         val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null
         if (validatorClass.owner.kind != ClassKind.OBJECT) {
             System.err.println(
@@ -160,16 +160,16 @@ private class ConstraintTransformer(
             )
             return null
         }
-        return ConstraintValidatorRef(validatorClass, validate.symbol)
+        return ValidatorRef(validatorClass, validate.symbol)
     }
 }
 
-private class ConstraintValidatorRef(
+private class ValidatorRef(
     val objectClass: IrClassSymbol,
     val validate: IrSimpleFunctionSymbol,
 )
 
 private class ConstraintApplication(
-    val validator: ConstraintValidatorRef,
+    val validator: ValidatorRef,
     val annotation: IrConstructorCall,
 )

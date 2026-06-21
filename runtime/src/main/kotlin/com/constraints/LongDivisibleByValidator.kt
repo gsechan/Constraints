@@ -4,7 +4,7 @@ package com.constraints
  * Runtime validator for [LongDivisibleBy]. Uses floored modulo ([Long.mod]) so it agrees exactly
  * with the compiler plugin's compile-time congruence check.
  */
-object LongDivisibleByValidator : ConstraintValidator<Long, LongDivisibleBy> {
+object LongDivisibleByValidator : Validator<Long, LongDivisibleBy> {
     override fun validate(value: Long, annotation: LongDivisibleBy) {
         if (annotation.divisor == 0L) {
             throw ConstraintException("@LongDivisibleBy divisor must be non-zero")
