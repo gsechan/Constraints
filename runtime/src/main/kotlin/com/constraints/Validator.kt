@@ -1,7 +1,7 @@
 package com.constraints
 
 /**
- * Contract for constraint validators -- both `@ConstrainedBy` and `@CompileTimeConstraint`.
+ * Contract for constraint validators (the validator named by a `@Constraint` annotation).
  *
  * Validators confirm whether or not a value is allowed for an instance of a constraint.
  * Validators must be stateless and not use outside values to validate-  using state or

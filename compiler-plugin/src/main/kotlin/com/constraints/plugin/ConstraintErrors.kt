@@ -15,7 +15,7 @@ import org.jetbrains.kotlin.diagnostics.rendering.CommonRenderers
  *  - [INTRANGE_NOT_VERIFIED]   -- an `@IntRange` assignment can't be statically proven
  *                                 to lie within the declared range.
  *  - [INTRANGE_DIVISION_BY_ZERO] -- an integer division/modulo whose divisor range includes 0.
- *  - [CONSTRAINT_NOT_VALIDATED] -- an assignment to a runtime-only `@ConstrainedBy` value
+ *  - [CONSTRAINT_NOT_VALIDATED] -- an assignment to a runtime-only `@Constraint` value
  *                                 that isn't wrapped in `checkConstraint(value)`.
  *
  * Declared on a [KtDiagnosticsContainer] (the context `error1` needs) and wired

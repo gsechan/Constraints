@@ -12,7 +12,7 @@ package com.constraints
  * which case callers may trust the result without a runtime check, and the
  * function's `return`s are themselves checked against the range.
  */
-@CompileTimeConstraint(IntRangeValidator::class)
+@Constraint(IntRangeValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,

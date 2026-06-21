@@ -11,7 +11,7 @@ package com.constraints
  *
  * `remainder` defaults to 0, so `@LongDivisibleBy(3)` reads as "divisible by 3".
  */
-@CompileTimeConstraint(LongDivisibleByValidator::class)
+@Constraint(LongDivisibleByValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,

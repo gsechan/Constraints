@@ -43,8 +43,17 @@ private val INT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identif
 private val LONG_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongRange"))
 private val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
 private val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongDivisibleBy"))
-private val CONSTRAINED_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ConstrainedBy"))
+private val CONSTRAINT_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Constraint"))
 private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
+
+/**
+ * Constraints the checker analyzes statically (interval for ranges, residue for divisibility).
+ * They are detected by their own class id, so they are excluded from the generic transfer-only
+ * fallback that applies to every other `@Constraint`.
+ */
+private val BUILTIN_ANALYZED = setOf(
+    INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
+)
 
 // ===========================================================================
 // Interval lattice -- the part that does the actual reasoning. Pure Kotlin, so
@@ -192,15 +201,15 @@ object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common)
  *
  * A bare `checkConstraint(value)` defers all of them to runtime and is always accepted.
  * Otherwise each constraint must be proven statically:
- *  - `@ConstrainedBy(V)` (runtime-only): provable only if [rhs] is *already known* to satisfy
- *    every required constraint -- i.e. it reads a variable declared with the same constraint
- *    (same annotation class and equal arguments). This is sound because every write to that
- *    variable is itself checked, and validators are required to be pure (a stateless predicate on
- *    the value and annotation), so a value that satisfied the constraint when written still does.
- *    A literal or arithmetic result can't be proven against an opaque validator, so it needs
- *    `checkConstraint`.
- *  - `@IntRange` / `@LongRange` (compile-time): proven by interval inference ([verify]).
- *  - `@DivisibleBy` / `@LongDivisibleBy` (compile-time): proven by residue inference ([verifyDivisibility]).
+ *  - runtime-only `@Constraint`s (everything but the four built-ins below): provable only if
+ *    [rhs] is *already known* to satisfy every required constraint -- i.e. it reads a variable
+ *    declared with the same constraint (same annotation class and equal arguments). This is sound
+ *    because every write to that variable is itself checked, and validators are required to be
+ *    pure (a stateless predicate on the value and annotation), so a value that satisfied the
+ *    constraint when written still does. A literal or arithmetic result can't be proven against an
+ *    opaque validator, so it needs `checkConstraint`.
+ *  - `@IntRange` / `@LongRange`: proven by interval inference ([verify]).
+ *  - `@DivisibleBy` / `@LongDivisibleBy`: proven by residue inference ([verifyDivisibility]).
  */
 private fun verifyConstraints(
     symbol: FirVariableSymbol<*>,
@@ -208,7 +217,7 @@ private fun verifyConstraints(
     context: CheckerContext,
     reporter: DiagnosticReporter,
 ) {
-    val required = symbol.constrainedByKeys(context.session)
+    val required = symbol.runtimeConstraintKeys(context.session)
     val range = symbol.rangeTarget(context.session)
     val divisibility = symbol.divisibleBy(context.session)
     if (required.isEmpty() && range == null && divisibility == null) return
@@ -237,13 +246,13 @@ private fun verifyConstraints(
 }
 
 /**
- * The set of `@ConstrainedBy` constraints [expr] is *already known* to satisfy: the declared
+ * The set of runtime-only constraints [expr] is *already known* to satisfy: the declared
  * constraints of the variable it reads (a sound invariant, since every write to that variable
  * is checked). Any other expression is known to satisfy nothing.
  */
 private fun knownConstraints(expr: FirExpression?, session: FirSession): Set<ConstraintKey> = when (expr) {
     is FirPropertyAccessExpression ->
-        expr.calleeReference.toResolvedVariableSymbol()?.constrainedByKeys(session) ?: emptySet()
+        expr.calleeReference.toResolvedVariableSymbol()?.runtimeConstraintKeys(session) ?: emptySet()
 
     is FirDesugaredAssignmentValueReferenceExpression ->
         knownConstraints(expr.expressionRef.value, session)
@@ -475,10 +484,9 @@ internal fun residueOp(a: Long?, b: Long?, divisor: Long, op: (Long, Long) -> Lo
 }
 
 /**
- * Identifies a `@ConstrainedBy` constraint for the transfer proof. The identity is the
- * annotation's class plus all its argument values, so two values share a constraint only
- * when annotated identically -- e.g. `@InverseRange(0, 10)` matches `@InverseRange(0, 10)`
- * but not `@InverseRange(5, 20)`.
+ * Identifies a runtime-only constraint for the transfer proof. The identity is the annotation's
+ * class plus all its argument values, so two values share a constraint only when annotated
+ * identically -- e.g. `@InverseRange(0, 10)` matches `@InverseRange(0, 10)` but not `@InverseRange(5, 20)`.
  */
 private data class ConstraintKey(val annotationClassId: ClassId, val arguments: Map<String, Any>) {
     fun render(): String {
@@ -490,27 +498,29 @@ private data class ConstraintKey(val annotationClassId: ClassId, val arguments: 
     private fun renderValue(v: Any): String = if (v is ClassId) v.shortClassName.asString() else v.toString()
 }
 
-/** The set of `@ConstrainedBy` constraints (by [ConstraintKey]) this variable is declared to satisfy. */
-private fun FirVariableSymbol<*>.constrainedByKeys(session: FirSession): Set<ConstraintKey> =
-    resolvedAnnotationsWithArguments.mapNotNull { it.constrainedByKey(session) }.toSet()
+/** The set of runtime-only constraints (by [ConstraintKey]) this variable is declared to satisfy. */
+private fun FirVariableSymbol<*>.runtimeConstraintKeys(session: FirSession): Set<ConstraintKey> =
+    resolvedAnnotationsWithArguments.mapNotNull { it.runtimeConstraintKey(session) }.toSet()
 
 /**
- * The [ConstraintKey] of this annotation if it is a `@ConstrainedBy` constraint -- i.e. its
- * annotation class is meta-annotated `@ConstrainedBy(...)` (mirrors [rangeBounds]) -- otherwise
- * null. Null too if any argument can't be read as a comparable value, which conservatively
- * forces the runtime `checkConstraint` path.
+ * The [ConstraintKey] of this annotation if it is a *runtime-only* `@Constraint` -- i.e. its class
+ * is meta-annotated `@Constraint(...)` but isn't one of the [BUILTIN_ANALYZED] constraints (which
+ * get interval/residue proofs instead). Otherwise null -- and null too if any argument can't be
+ * read as a comparable value, which conservatively forces the runtime `checkConstraint` path.
  */
-private fun FirAnnotation.constrainedByKey(session: FirSession): ConstraintKey? {
-    if (!isConstrainedByConstraint(session)) return null
+private fun FirAnnotation.runtimeConstraintKey(session: FirSession): ConstraintKey? {
     val classId = toAnnotationClassId(session) ?: return null
+    if (classId in BUILTIN_ANALYZED) return null
+    if (!isConstraintAnnotation(session)) return null
     val arguments = comparableArguments() ?: return null
     return ConstraintKey(classId, arguments)
 }
 
-private fun FirAnnotation.isConstrainedByConstraint(session: FirSession): Boolean {
+/** True if this annotation's class is meta-annotated `@Constraint(...)`. */
+private fun FirAnnotation.isConstraintAnnotation(session: FirSession): Boolean {
     val classId = toAnnotationClassId(session) ?: return false
     val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return false
-    return classSymbol.resolvedAnnotationsWithArguments.any { it.toAnnotationClassId(session) == CONSTRAINED_BY_CLASS_ID }
+    return classSymbol.resolvedAnnotationsWithArguments.any { it.toAnnotationClassId(session) == CONSTRAINT_CLASS_ID }
 }
 
 /** This annotation's arguments as comparable values (literals by value, `K::class` by class id), or null if any can't be read. */

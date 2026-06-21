@@ -8,7 +8,7 @@ package com.constraints
  *
  * It may also annotate a return type -- `fun f(): @LongRange(0, 5) Long`.
  */
-@CompileTimeConstraint(LongRangeValidator::class)
+@Constraint(LongRangeValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,

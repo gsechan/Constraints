@@ -8,7 +8,7 @@ package com.constraints
  * This was chosen to allow greater compile time analysis, as the expected use of this is on positive numbers
  *
  */
-@CompileTimeConstraint(DivisibleByValidator::class)
+@Constraint(DivisibleByValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,

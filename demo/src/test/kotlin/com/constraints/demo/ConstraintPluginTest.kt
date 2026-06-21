@@ -1,6 +1,6 @@
 package com.constraints.demo
 
-import com.constraints.ConstrainedBy
+import com.constraints.Constraint
 import com.constraints.ConstraintException
 import com.constraints.IntRange
 import com.constraints.Validator
@@ -10,17 +10,18 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 // ---------------------------------------------------------------------------
-// @ConstrainedBy is a meta-annotation: it links a constraint annotation to its
+// @Constraint is a meta-annotation: it links a constraint annotation to its
 // Validator<T, A>. You annotate a value with the constraint (e.g. @Positive,
-// @InverseRange(0, 10)), never with @ConstrainedBy directly. The plugin passes the
+// @InverseRange(0, 10)), never with @Constraint directly. The plugin passes the
 // constraint annotation instance to validate(), so a data-carrying constraint can read
 // its parameters.
 //
-// Every assignment to a constrained value is a compile error unless wrapped in
-// checkConstraint(value); the plugin injects the validate() call into that escape hatch.
+// These are custom (runtime-only) constraints -- the kind the built-in compile-time
+// analyzers (@IntRange, @DivisibleBy) can't express. Every assignment is a compile error
+// unless wrapped in checkConstraint(value); the plugin injects the validate() call there.
 // ---------------------------------------------------------------------------
 
-@ConstrainedBy(PositiveValidator::class)
+@Constraint(PositiveValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,
@@ -36,9 +37,8 @@ object PositiveValidator : Validator<Int, Positive> {
     }
 }
 
-// A no-data custom constraint -- the kind @DivisibleBy/@IntRange can't express, so it needs a
-// runtime Validator. (Evenness itself is a built-in now: @Even == @DivisibleBy(2, 0).)
-@ConstrainedBy(NonZeroValidator::class)
+// A no-data custom constraint. (Evenness itself is a built-in now: @Even == @DivisibleBy(2, 0).)
+@Constraint(NonZeroValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,
@@ -56,7 +56,7 @@ object NonZeroValidator : Validator<Int, NonZero> {
 
 // A data-carrying constraint: the inverse of @IntRange -- the value must be OUTSIDE [min, max].
 // The validator reads min/max off the annotation instance it is handed.
-@ConstrainedBy(InverseRangeValidator::class)
+@Constraint(InverseRangeValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
     AnnotationTarget.PROPERTY,
@@ -73,7 +73,7 @@ object InverseRangeValidator : Validator<Int, InverseRange> {
     }
 }
 
-class ConstrainedByPluginTest {
+class ConstraintPluginTest {
 
     @Test
     fun `positive allows positive value`() {
@@ -172,7 +172,7 @@ class ConstrainedByPluginTest {
 
     // -----------------------------------------------------------------------
     // These do NOT compile:
-    //   @ConstrainedBy(PositiveValidator::class) val w = 5     // error: @ConstrainedBy targets
+    //   @Constraint(PositiveValidator::class) val w = 5        // error: @Constraint targets
     //                                                          //        ANNOTATION_CLASS, not values
     //   @Positive var x = 5                                    // error: opaque literal, not validated
     //   @InverseRange(0, 10) var y = 20                        // error: opaque literal, not validated
