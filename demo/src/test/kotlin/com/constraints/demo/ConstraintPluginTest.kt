@@ -168,6 +168,7 @@ class ConstraintPluginTest {
         @InverseRange(0, 10) val a = checkConstraint(20)
         @InverseRange(0, 10) val b = a
         assertEquals(20, b)
+
     }
 
     // -----------------------------------------------------------------------

@@ -58,122 +58,36 @@ private val BUILTIN_ANALYZED = setOf(
     INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
 )
 
-// ===========================================================================
-// Interval lattice -- the part that does the actual reasoning. Pure Kotlin, so
-// it is fully testable on its own and independent of the (more volatile) FIR API.
-// ===========================================================================
-
-internal data class Interval(val min: Long, val max: Long) {
-    val isUnknown: Boolean get() = this == UNKNOWN
-
-    fun subsetOf(other: Interval): Boolean = min >= other.min && max <= other.max
-
-    /** True if the two ranges share at least one value (so the assignment *could* be valid). */
-    fun overlaps(other: Interval): Boolean = min <= other.max && other.min <= max
-
-    companion object {
-        /** "Could be anything" -- the top of the lattice; never a subset of a real range. */
-        val UNKNOWN = Interval(Long.MIN_VALUE, Long.MAX_VALUE)
-
-        fun point(v: Long) = Interval(v, v)
-    }
-}
-
-/**
- * The representable range of a constrained value type -- [INT] or [LONG]. Interval arithmetic is
- * done over-approximately in [Long]; a result is widened to [Interval.UNKNOWN] whenever it would
- * overflow `Long` (caught via the `*Exact` helpers) OR leave [min]..[max]. That keeps the analysis
- * sound for both domains: an `Int` value whose math escapes 32 bits would wrap at runtime, and a
- * `Long` value whose math escapes 64 bits would wrap too -- in neither case can we trust the
- * over-approximation, so we forget it.
- */
-internal class NumericDomain(val min: Long, val max: Long) {
-
-    fun of(lo: Long, hi: Long): Interval =
-        if (lo < min || hi > max) Interval.UNKNOWN else Interval(lo, hi)
-
-    fun plus(a: Interval, b: Interval): Interval =
-        if (a.isUnknown || b.isUnknown) Interval.UNKNOWN
-        else safe { of(Math.addExact(a.min, b.min), Math.addExact(a.max, b.max)) }
-
-    fun minus(a: Interval, b: Interval): Interval =
-        if (a.isUnknown || b.isUnknown) Interval.UNKNOWN
-        else safe { of(Math.subtractExact(a.min, b.max), Math.subtractExact(a.max, b.min)) }
-
-    fun times(a: Interval, b: Interval): Interval =
-        if (a.isUnknown || b.isUnknown) Interval.UNKNOWN
-        else safe {
-            val corners = longArrayOf(
-                Math.multiplyExact(a.min, b.min), Math.multiplyExact(a.min, b.max),
-                Math.multiplyExact(a.max, b.min), Math.multiplyExact(a.max, b.max),
-            )
-            of(corners.min(), corners.max())
-        }
-
-    fun div(a: Interval, b: Interval): Interval {
-        if (a.isUnknown || b.isUnknown) return Interval.UNKNOWN
-        // If the divisor range includes 0 we can't bound the result (and it might divide by zero).
-        if (b.min <= 0 && b.max >= 0) return Interval.UNKNOWN
-        // The one integer-division overflow is MIN_VALUE / -1; don't trust the wrapped value.
-        if (a.min == Long.MIN_VALUE && b.min <= -1 && b.max >= -1) return Interval.UNKNOWN
-        val corners = longArrayOf(a.min / b.min, a.min / b.max, a.max / b.min, a.max / b.max)
-        return of(corners.min(), corners.max())
-    }
-
-    fun rem(a: Interval, b: Interval): Interval {
-        if (a.isUnknown || b.isUnknown) return Interval.UNKNOWN
-        // Divisor may be 0 -> can't bound (reported as a divide/modulo-by-zero error elsewhere).
-        if (b.min <= 0 && b.max >= 0) return Interval.UNKNOWN
-        return safe {
-            // `%` keeps the dividend's sign with |result| <= |divisor| - 1, and is also bounded by
-            // the dividend. safeAbs widens to UNKNOWN if a divisor bound is MIN_VALUE.
-            val maxRemainder = maxOf(safeAbs(b.min), safeAbs(b.max)) - 1
-            val lo = if (a.min < 0) maxOf(a.min, -maxRemainder) else 0L
-            val hi = if (a.max > 0) minOf(a.max, maxRemainder) else 0L
-            of(lo, hi)
-        }
-    }
-
-    private inline fun safe(block: () -> Interval): Interval =
-        try { block() } catch (e: ArithmeticException) { Interval.UNKNOWN }
-
-    /** abs that throws (rather than overflowing to a negative) on MIN_VALUE, so [safe] forgets it. */
-    private fun safeAbs(x: Long): Long =
-        if (x == Long.MIN_VALUE) throw ArithmeticException("abs overflow") else if (x < 0) -x else x
-
-    companion object {
-        val INT = NumericDomain(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong())
-        val LONG = NumericDomain(Long.MIN_VALUE, Long.MAX_VALUE)
-    }
-}
+// The interval lattice ([Interval]) and its arithmetic ([NumericDomain]) -- the pure-Kotlin range
+// reasoning -- live in their own files; this file is only the FIR/compiler interaction.
 
 // ===========================================================================
 // FIR wiring
 // ===========================================================================
 
-class IntRangeFirExtensionRegistrar : FirExtensionRegistrar() {
+class ConstraintFirExtensionRegistrar : FirExtensionRegistrar() {
     override fun ExtensionRegistrarContext.configurePlugin() {
-        +::IntRangeCheckersExtension
+        +::ConstraintCheckersExtension
         // Public registration path for the plugin's diagnostics (replaces the
         // internal renderer-map / RootDiagnosticRendererFactory approach).
         registerDiagnosticContainers(ConstraintErrors)
     }
 }
 
-class IntRangeCheckersExtension(session: FirSession) : FirAdditionalCheckersExtension(session) {
+class ConstraintCheckersExtension(session: FirSession) : FirAdditionalCheckersExtension(session) {
     override val declarationCheckers = object : DeclarationCheckers() {
-        override val propertyCheckers = setOf(IntRangePropertyChecker)
+        override val propertyCheckers = setOf(ConstraintPropertyChecker)
         override val regularClassCheckers = setOf(ConstraintValidatorChecker)
     }
 
     override val expressionCheckers = object : ExpressionCheckers() {
-        override val variableAssignmentCheckers = setOf(IntRangeAssignmentChecker)
-        override val returnExpressionCheckers = setOf(IntRangeReturnChecker)
+        override val variableAssignmentCheckers = setOf(ConstraintAssignmentChecker)
+        override val returnExpressionCheckers = setOf(ConstraintReturnChecker)
     }
 }
 
 /** Initialisation:  `@IntRange(min,max) var x = <initializer>` */
-object IntRangePropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
+object ConstraintPropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(declaration: FirProperty) {
         val initializer = declaration.initializer ?: return
@@ -182,7 +96,7 @@ object IntRangePropertyChecker : FirPropertyChecker(MppCheckerKind.Common) {
 }
 
 /** Reassignment, including `a++` / `a--` (which desugar to `a = a.inc()` / `a.dec()`). */
-object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.Common) {
+object ConstraintAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(expression: FirVariableAssignment) {
         val symbol = expression.lValue.resolvedVariableSymbolOrNull() ?: return
@@ -190,13 +104,16 @@ object IntRangeAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind.C
     }
 }
 
-/** Return:  every `return <expr>` from a function with a range / divisibility return type must honor it. */
-object IntRangeReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common) {
+/** Return:  every `return <expr>` from a function with a constrained return type must honor it. */
+object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(expression: FirReturnExpression) {
         val function = expression.target.labeledElement as? FirFunction ?: return
-        function.symbol.returnTypeRange(context.session)?.let { verify(expression.result, it, context, reporter) }
-        function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(expression.result, it, context, reporter) }
+        val result = expression.result
+        // Runtime-only constraints on the return type; if unsatisfied, stop (as in verifyConstraints).
+        if (verifyRuntimeConstraints(function.symbol.returnTypeConstraintKeys(context.session), result, context, reporter)) return
+        function.symbol.returnTypeRange(context.session)?.let { verifyRange(result, it, context, reporter) }
+        function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(result, it, context, reporter) }
     }
 }
 
@@ -246,7 +163,7 @@ private fun FirAnnotation.validatorClassId(): ClassId? {
  *    pure (a stateless predicate on the value and annotation), so a value that satisfied the
  *    constraint when written still does. A literal or arithmetic result can't be proven against an
  *    opaque validator, so it needs `checkConstraint`.
- *  - `@IntRange` / `@LongRange`: proven by interval inference ([verify]).
+ *  - `@IntRange` / `@LongRange`: proven by interval inference ([verifyRange]).
  *  - `@DivisibleBy` / `@LongDivisibleBy`: proven by residue inference ([verifyDivisibility]).
  */
 private fun verifyConstraints(
@@ -263,24 +180,39 @@ private fun verifyConstraints(
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isBareEscapeHatch(rhs)) return
 
-    if (required.isNotEmpty()) {
-        val missing = required - knownConstraints(rhs, context.session)
-        if (missing.isNotEmpty()) {
-            val names = missing.joinToString(", ") { it.render() }
-            reporter.reportOn(
-                rhs.source,
-                ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-                "Cannot prove this satisfies $names: an opaque validator can't be checked statically. " +
-                    "Wrap it in checkConstraint(value) to validate at runtime, or assign from a value already " +
-                    "known to satisfy the same constraint (same annotation and arguments).",
-                context,
-            )
-            return // don't also pile on a compile-time-constraint error for the same assignment
-        }
-    }
+    // Runtime-only constraints first; if one is unsatisfied, stop (don't pile on a range/divisibility error).
+    if (verifyRuntimeConstraints(required, rhs, context, reporter)) return
 
-    if (range != null) verify(rhs, range, context, reporter)
+    if (range != null) verifyRange(rhs, range, context, reporter)
     if (divisibility != null) verifyDivisibility(rhs, divisibility, context, reporter)
+}
+
+/**
+ * Reports [ConstraintErrors.CONSTRAINT_NOT_VALIDATED] unless every runtime-only constraint in
+ * [required] is satisfied by [rhs] -- i.e. [rhs] is a bare `checkConstraint(...)` (deferred to
+ * runtime) or is already known to satisfy each: a transfer from a value carrying the identical
+ * constraint (same validator, same annotation arguments). Returns true if an error was reported, so
+ * a caller can stop instead of piling on a further range/divisibility error for the same expression.
+ */
+private fun verifyRuntimeConstraints(
+    required: Set<ConstraintKey>,
+    rhs: FirExpression,
+    context: CheckerContext,
+    reporter: DiagnosticReporter,
+): Boolean {
+    if (required.isEmpty() || isBareEscapeHatch(rhs)) return false
+    val missing = required - knownConstraints(rhs, context.session)
+    if (missing.isEmpty()) return false
+    val names = missing.joinToString(", ") { it.render() }
+    reporter.reportOn(
+        rhs.source,
+        ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+        "Cannot prove this satisfies $names: an opaque validator can't be checked statically. " +
+            "Wrap it in checkConstraint(value) to validate at runtime, or use a value already known to " +
+            "satisfy the same constraint (same annotation and arguments).",
+        context,
+    )
+    return true
 }
 
 /**
@@ -299,7 +231,7 @@ private fun knownConstraints(expr: FirExpression?, session: FirSession): Set<Con
 }
 
 /** Reports an error unless [rhs]'s inferred interval is provably within [target]. */
-private fun verify(rhs: FirExpression, target: RangeTarget, context: CheckerContext, reporter: DiagnosticReporter) {
+private fun verifyRange(rhs: FirExpression, target: RangeTarget, context: CheckerContext, reporter: DiagnosticReporter) {
     // A possible divide-by-zero anywhere in the expression is a hard error in its
     // own right -- report it and stop (the range check would just add noise).
     if (reportDivisionByZero(rhs, target.domain, context, reporter)) return
@@ -539,6 +471,10 @@ private data class ConstraintKey(val annotationClassId: ClassId, val arguments: 
 /** The set of runtime-only constraints (by [ConstraintKey]) this variable is declared to satisfy. */
 private fun FirVariableSymbol<*>.runtimeConstraintKeys(session: FirSession): Set<ConstraintKey> =
     resolvedAnnotationsWithArguments.mapNotNull { it.runtimeConstraintKey(session) }.toSet()
+
+/** The set of runtime-only constraints (by [ConstraintKey]) on this callable's return type. */
+private fun FirCallableSymbol<*>.returnTypeConstraintKeys(session: FirSession): Set<ConstraintKey> =
+    resolvedReturnType.customAnnotations.mapNotNull { it.runtimeConstraintKey(session) }.toSet()
 
 /**
  * The [ConstraintKey] of this annotation if it is a *runtime-only* `@Constraint` -- i.e. its class

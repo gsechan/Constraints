@@ -27,7 +27,7 @@ class ConstraintsComponentRegistrar : CompilerPluginRegistrar() {
     override val supportsK2: Boolean = true
 
     override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
-        FirExtensionRegistrarAdapter.registerExtension(IntRangeFirExtensionRegistrar())
+        FirExtensionRegistrarAdapter.registerExtension(ConstraintFirExtensionRegistrar())
         // The escape-hatch rewrite injects validator calls for every @Constraint (built-in
         // compile-time ones like @IntRange and runtime-only ones) into checkConstraint(value).
         IrGenerationExtension.registerExtension(CheckIntRangeBoundsIrGenerationExtension())
