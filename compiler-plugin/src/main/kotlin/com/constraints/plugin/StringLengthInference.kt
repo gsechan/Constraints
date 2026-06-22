@@ -11,20 +11,19 @@ import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 
 // ===========================================================================
-// String length inference -- maps a CharSequence expression to the [Interval]
-// of lengths it can have, for proving `@StringLength`. Lengths are non-negative
-// integers that fit in Int, so we reuse [NumericDomain.INT] for the arithmetic.
+// String-length inference -- maps a CharSequence expression to the [Interval]
+// of lengths it can have, for proving `@StringLength`. Reuses [NumericDomain.INT].
 //
 // Proven cases:
-//   - String literals: length is known exactly.
+//   - String literals: exact length.
+//   - Concatenation (`+`): sum of both lengths when both operands are known.
 //   - Variable reads: use the declared @StringLength bounds.
-//   - Concatenation (`+`): the result length is the sum of the two operand lengths.
-//   - Return type: trust a @StringLength on the callee's return type.
+//   - Callee return type annotated with @StringLength: trust those bounds.
 // ===========================================================================
 
 /**
- * Infers the length [Interval] of [expr]. Returns [Interval.UNKNOWN] for anything not
- * statically provable (dynamic input, interpolation, other function calls).
+ * Infers the length [Interval] of the CharSequence [expr]. Returns [Interval.UNKNOWN]
+ * for anything not statically provable, requiring `checkConstraint`.
  */
 internal fun inferStringLength(expr: FirExpression?, session: FirSession): Interval = when (expr) {
     is FirLiteralExpression ->
@@ -32,12 +31,10 @@ internal fun inferStringLength(expr: FirExpression?, session: FirSession): Inter
 
     is FirFunctionCall -> inferStringLengthCall(expr, session)
 
-    // A bare variable read: use its declared @StringLength bounds (sound invariant -- every write
-    // is checked, so the variable's length always lies within its declared range).
+    // A bare variable read: use its declared @StringLength bounds.
     is FirPropertyAccessExpression ->
         expr.calleeReference.toResolvedVariableSymbol()?.stringLengthTarget(session)?.interval ?: Interval.UNKNOWN
 
-    // `a++` / `a += ...` desugar so the variable read becomes this reference wrapper.
     is FirDesugaredAssignmentValueReferenceExpression ->
         inferStringLength(expr.expressionRef.value, session)
 
@@ -46,12 +43,15 @@ internal fun inferStringLength(expr: FirExpression?, session: FirSession): Inter
 
 private fun inferStringLengthCall(call: FirFunctionCall, session: FirSession): Interval {
     val callee = call.calleeReference.toResolvedNamedFunctionSymbol() ?: return Interval.UNKNOWN
-    // String concatenation: `a + b` → length is len(a) + len(b), using Int arithmetic.
+
+    // String concatenation: `a + b` → length = len(a) + len(b). Both sides must be known.
     if (callee.name.asString() == "plus") {
         val receiverLen = inferStringLength(call.dispatchReceiver ?: call.explicitReceiver, session)
         val argLen = inferStringLength(call.arguments.firstOrNull(), session)
+        if (receiverLen.isUnknown || argLen.isUnknown) return Interval.UNKNOWN
         return NumericDomain.INT.plus(receiverLen, argLen)
     }
-    // Any other call: trust a @StringLength on its return type, if it has one.
+
+    // Trust a @StringLength on the callee's return type.
     return callee.returnTypeStringLength(session)?.interval ?: Interval.UNKNOWN
 }
