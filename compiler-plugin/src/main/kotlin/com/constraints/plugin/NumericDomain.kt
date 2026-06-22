@@ -65,6 +65,8 @@ internal class NumericDomain(val min: Long, val max: Long) {
         if (x == Long.MIN_VALUE) throw ArithmeticException("abs overflow") else if (x < 0) -x else x
 
     companion object {
+        val BYTE = NumericDomain(Byte.MIN_VALUE.toLong(), Byte.MAX_VALUE.toLong())
+        val SHORT = NumericDomain(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong())
         val INT = NumericDomain(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong())
         val LONG = NumericDomain(Long.MIN_VALUE, Long.MAX_VALUE)
     }

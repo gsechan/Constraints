@@ -11,6 +11,7 @@ import org.jetbrains.kotlin.fir.analysis.checkers.declaration.FirPropertyChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.declaration.FirRegularClassChecker
 import org.jetbrains.kotlin.fir.declarations.FirRegularClass
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.ExpressionCheckers
+import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirAnnotationChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirVariableAssignmentChecker
 import org.jetbrains.kotlin.fir.analysis.extensions.FirAdditionalCheckersExtension
 import org.jetbrains.kotlin.fir.declarations.FirProperty
@@ -42,8 +43,12 @@ import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 
+private val BYTE_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ByteRange"))
+private val SHORT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ShortRange"))
 private val INT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("IntRange"))
 private val LONG_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongRange"))
+private val BYTE_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ByteDivisibleBy"))
+private val SHORT_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ShortDivisibleBy"))
 private val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
 private val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongDivisibleBy"))
 private val CONSTRAINT_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Constraint"))
@@ -55,7 +60,8 @@ private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.ide
  * fallback that applies to every other `@Constraint`.
  */
 private val BUILTIN_ANALYZED = setOf(
-    INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
+    BYTE_RANGE_CLASS_ID, SHORT_RANGE_CLASS_ID, INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID,
+    BYTE_DIVISIBLE_BY_CLASS_ID, SHORT_DIVISIBLE_BY_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
 )
 
 // The interval lattice ([Interval]) and its arithmetic ([NumericDomain]) -- the pure-Kotlin range
@@ -83,6 +89,7 @@ class ConstraintCheckersExtension(session: FirSession) : FirAdditionalCheckersEx
     override val expressionCheckers = object : ExpressionCheckers() {
         override val variableAssignmentCheckers = setOf(ConstraintAssignmentChecker)
         override val returnExpressionCheckers = setOf(ConstraintReturnChecker)
+        override val annotationCheckers = setOf(DivisibleByDivisorChecker)
     }
 }
 
@@ -138,6 +145,32 @@ object ConstraintValidatorChecker : FirRegularClassChecker(MppCheckerKind.Common
                 constraint.source,
                 ConstraintErrors.CONSTRAINT_VALIDATOR_INVALID,
                 "@Constraint validator '${validatorId.shortClassName.asString()}' must be a Kotlin object (a singleton).",
+                context,
+            )
+        }
+    }
+}
+
+/**
+ * A `@DivisibleBy` / `@LongDivisibleBy` with a zero divisor is meaningless (`mod 0`). This rejects it
+ * at every site the annotation is written -- value, return type, parameter, or an alias definition --
+ * so it's a compile error rather than a runtime throw, regardless of how the value is assigned.
+ */
+object DivisibleByDivisorChecker : FirAnnotationChecker(MppCheckerKind.Common) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(expression: FirAnnotation) {
+        val label = when (expression.toAnnotationClassId(context.session)) {
+            BYTE_DIVISIBLE_BY_CLASS_ID -> "@ByteDivisibleBy"
+            SHORT_DIVISIBLE_BY_CLASS_ID -> "@ShortDivisibleBy"
+            DIVISIBLE_BY_CLASS_ID -> "@DivisibleBy"
+            LONG_DIVISIBLE_BY_CLASS_ID -> "@LongDivisibleBy"
+            else -> return
+        }
+        if (expression.longArgument("divisor") == 0L) {
+            reporter.reportOn(
+                expression.source,
+                ConstraintErrors.DIVISIBLE_BY_NOT_VERIFIED,
+                "$label divisor must be non-zero.",
                 context,
             )
         }
@@ -265,15 +298,9 @@ private fun verifyRange(rhs: FirExpression, target: RangeTarget, context: Checke
 private fun verifyDivisibility(rhs: FirExpression, d: Divisibility, context: CheckerContext, reporter: DiagnosticReporter) {
     // Explicit escape hatch: the IR backend injects the validator, so accept without inferring.
     if (isCheckConstraints(rhs)) return
-    if (d.divisor == 0L) {
-        reporter.reportOn(
-            rhs.source,
-            ConstraintErrors.DIVISIBLE_BY_NOT_VERIFIED,
-            "${d.label} divisor must be non-zero.",
-            context,
-        )
-        return
-    }
+    // A zero divisor is reported at the annotation by DivisibleByDivisorChecker; bail before the
+    // residue math (mod 0 would throw and crash the checker).
+    if (d.divisor == 0L) return
     val expected = d.remainder.mod(d.divisor)
     val residue = inferRemainder(rhs, d.divisor, context.session)
     if (residue == expected) return // statically proven -> no runtime check needed
@@ -429,6 +456,8 @@ private fun FirAnnotation.rangeTarget(session: FirSession): RangeTarget? {
 }
 
 private fun rangeTargetFor(classId: ClassId?, range: FirAnnotation): RangeTarget? = when (classId) {
+    BYTE_RANGE_CLASS_ID -> readInterval(range)?.let { RangeTarget(it, NumericDomain.BYTE, "@ByteRange") }
+    SHORT_RANGE_CLASS_ID -> readInterval(range)?.let { RangeTarget(it, NumericDomain.SHORT, "@ShortRange") }
     INT_RANGE_CLASS_ID -> readInterval(range)?.let { RangeTarget(it, NumericDomain.INT, "@IntRange") }
     LONG_RANGE_CLASS_ID -> readInterval(range)?.let { RangeTarget(it, NumericDomain.LONG, "@LongRange") }
     else -> null
@@ -465,6 +494,8 @@ private fun FirAnnotation.divisibilityArgs(session: FirSession): Divisibility? {
 }
 
 private fun divisibilityFor(classId: ClassId?, divisibleBy: FirAnnotation): Divisibility? = when (classId) {
+    BYTE_DIVISIBLE_BY_CLASS_ID -> readDivisibility(divisibleBy, "@ByteDivisibleBy")
+    SHORT_DIVISIBLE_BY_CLASS_ID -> readDivisibility(divisibleBy, "@ShortDivisibleBy")
     DIVISIBLE_BY_CLASS_ID -> readDivisibility(divisibleBy, "@DivisibleBy")
     LONG_DIVISIBLE_BY_CLASS_ID -> readDivisibility(divisibleBy, "@LongDivisibleBy")
     else -> null

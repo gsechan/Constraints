@@ -159,5 +159,7 @@ class DivisibleByPluginTest {
     //   @IntRange(0, 10) @DivisibleBy(2, 0) val z = 12   // 12 mod 2 == 0 but 12 > 10: IntRange fails
     //   @IntRange(0, 10) @DivisibleBy(2, 0) val w = 5    // 5 in [0,10] but 5 mod 2 == 1: DivisibleBy fails
     //   @Odd val z = 4                          // 4 is even: can never be valid
+    //   @DivisibleBy(0, 0) val d = checkConstraint(5)   // ERROR: divisor must be non-zero (mod 0)
+    //   @DivisibleBy(0) annotation class Foo            // ERROR: divisor must be non-zero (mod 0)
     // -----------------------------------------------------------------------
 }
