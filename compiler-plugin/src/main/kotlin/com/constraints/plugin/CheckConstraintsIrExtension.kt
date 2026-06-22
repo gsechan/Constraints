@@ -30,7 +30,9 @@ import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 
 private val CONSTRAINT_FQ = FqName("com.constraints.Constraint")
+private val ELEMENT_CONSTRAINT_FQ = FqName("com.constraints.ElementConstraint")
 private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
+private val VALIDATE_EACH_ELEMENT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("validateEachElement"))
 
 /**
  * Implements the runtime escape hatch`checkConstraint(value)` generically.
@@ -42,9 +44,9 @@ private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Na
 @OptIn(UnsafeDuringIrConstructionAPI::class)
 class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
     override fun generate(moduleFragment: IrModuleFragment, pluginContext: IrPluginContext) {
-        // checkConstraint is the single (generic) escape-hatch function.
         val checkConstraintFunction = pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE).single()
-        moduleFragment.transform(ConstraintTransformer(pluginContext, checkConstraintFunction), null)
+        val validateEachElementFunction = pluginContext.referenceFunctions(VALIDATE_EACH_ELEMENT_CALLABLE).singleOrNull()
+        moduleFragment.transform(ConstraintTransformer(pluginContext, checkConstraintFunction, validateEachElementFunction), null)
     }
 }
 
@@ -52,6 +54,7 @@ class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
 private class ConstraintTransformer(
     private val pluginContext: IrPluginContext,
     private val checkConstraintFunction: IrSimpleFunctionSymbol,
+    private val validateEachElementFunction: IrSimpleFunctionSymbol?,
 ) : IrElementTransformerVoidWithContext() {
 
     override fun visitVariable(declaration: IrVariable): IrStatement {
@@ -80,20 +83,31 @@ private class ConstraintTransformer(
         if (expr !is IrCall || expr.symbol != checkConstraintFunction) return expr
         val value = expr.arguments[0] ?: return expr
         val constraintApplications = annotations.flatMap { it.getAllConstraints() }
-        if (constraintApplications.isEmpty()) return value
+        val elementApplications = if (validateEachElementFunction != null)
+            annotations.flatMap { it.getElementConstraints() } else emptyList()
+        if (constraintApplications.isEmpty() && elementApplications.isEmpty()) return value
 
         val scope = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scope, expr.startOffset, expr.endOffset)
         return builder.irBlock(resultType = value.type) {
             val tmp = irTemporary(value) // evaluate the value once
+            // Value-level validators (@Constraint): validate(value, annotation)
             for (application in constraintApplications) {
                 +irCall(application.validator.validate).apply {
-                    arguments[0] = irGetObject(application.validator.objectClass) // dispatch receiver
-                    arguments[1] = irGet(tmp)                                     // value
-                    arguments[2] = application.annotation.deepCopyWithSymbols()   // annotation instance
+                    arguments[0] = irGetObject(application.validator.objectClass)
+                    arguments[1] = irGet(tmp)
+                    arguments[2] = application.annotation.deepCopyWithSymbols()
                 }
             }
-            +irGet(tmp) // block evaluates to the (unchanged) value
+            // Element-level validators (@ElementConstraint): validateEachElement(collection, annotation, validator)
+            for (application in elementApplications) {
+                +irCall(validateEachElementFunction!!).apply {
+                    arguments[0] = irGet(tmp)                                     // collection
+                    arguments[1] = application.annotation.deepCopyWithSymbols()   // annotation instance
+                    arguments[2] = irGetObject(application.validator.objectClass)  // validator
+                }
+            }
+            +irGet(tmp)
         }
     }
 
@@ -119,10 +133,21 @@ private class ConstraintTransformer(
     }
 
     /**
-     * Reads the validator class from a `@Constraint(V::class)` construction and locates its
-     * `validate` function. A non-object validator (or a missing `validate`) is already a compile
-     * error from the FIR `ConstraintValidatorChecker`, so this only returns null as a non-crash
-     * guard for the exotic case of a constraint defined in a module the plugin didn't check.
+     * The (elementValidator, annotation-instance) pairs this annotation contributes via
+     * `@ElementConstraint`. The validator is passed to `validateEachElement` along with this
+     * annotation instance, so a data-carrying element constraint can read its parameters.
+     */
+    private fun IrConstructorCall.getElementConstraints(): List<ConstraintApplication> {
+        val annotationClass = type.classOrNull?.owner ?: return emptyList()
+        val elementConstraintAnnotation = annotationClass.getAnnotation(ELEMENT_CONSTRAINT_FQ) ?: return emptyList()
+        val validator = elementConstraintAnnotation.getValidatorFromAnnotation() ?: return emptyList()
+        return listOf(ConstraintApplication(validator, this))
+    }
+
+    /**
+     * Reads the validator class from a `@Constraint(V::class)` or `@ElementConstraint(V::class)`
+     * construction and locates its `validate` function. Returns null as a non-crash guard for the
+     * exotic case of a constraint defined in a module the plugin didn't check.
      */
     private fun IrConstructorCall.getValidatorFromAnnotation(): ValidatorRef? {
         val validatorClass = (arguments[0] as? IrClassReference)?.symbol as? IrClassSymbol ?: return null

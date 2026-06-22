@@ -56,6 +56,7 @@ private val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name
 private val STRING_LENGTH_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("StringLength"))
 private val COLLECTION_SIZE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("CollectionSize"))
 private val CONSTRAINT_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Constraint"))
+private val ELEMENT_CONSTRAINT_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ElementConstraint"))
 private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
 /**
@@ -125,6 +126,7 @@ object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Commo
         val result = expression.result
         // Runtime-only constraints on the return type; if unsatisfied, stop (as in verifyConstraints).
         if (verifyRuntimeConstraints(function.symbol.returnTypeConstraintKeys(context.session), result, context, reporter)) return
+        if (verifyElementConstraints(function.symbol.returnTypeElementConstraintKeys(context.session), result, context, reporter)) return
         function.symbol.returnTypeRange(context.session)?.let { verifyRange(result, it, context, reporter) }
         function.symbol.returnTypeDoubleRange(context.session)?.let { verifyDoubleRange(result, it, context, reporter) }
         function.symbol.returnTypeStringLength(context.session)?.let { verifyStringLength(result, it, context, reporter) }
@@ -210,6 +212,7 @@ private fun FirAnnotation.validatorClassId(): ClassId? {
  *  - `@StringLength`: proven by string-length inference ([verifyStringLength]).
  *  - `@CollectionSize`: proven by collection-size inference ([verifyCollectionSize]).
  *  - `@DivisibleBy` / `@LongDivisibleBy` etc.: proven by residue inference ([verifyDivisibility]).
+ *  - `@ElementConstraint`: proven only by transfer from a value with the same element constraint.
  */
 private fun verifyConstraints(
     symbol: FirVariableSymbol<*>,
@@ -218,19 +221,21 @@ private fun verifyConstraints(
     reporter: DiagnosticReporter,
 ) {
     val required = symbol.runtimeConstraintKeys(context.session)
+    val requiredElement = symbol.elementConstraintKeys(context.session)
     val range = symbol.rangeTarget(context.session)
     val doubleRange = symbol.doubleRangeTarget(context.session)
     val stringLength = symbol.stringLengthTarget(context.session)
     val collectionSize = symbol.collectionSizeTarget(context.session)
     val divisibility = symbol.divisibleBy(context.session)
-    if (required.isEmpty() && range == null && doubleRange == null &&
+    if (required.isEmpty() && requiredElement.isEmpty() && range == null && doubleRange == null &&
         stringLength == null && collectionSize == null && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isCheckConstraints(rhs)) return
 
-    // Runtime-only constraints first; if one is unsatisfied, stop (don't pile on other errors).
+    // Runtime-only constraints (value-level and element-level) first.
     if (verifyRuntimeConstraints(required, rhs, context, reporter)) return
+    if (verifyElementConstraints(requiredElement, rhs, context, reporter)) return
 
     if (range != null) verifyRange(rhs, range, context, reporter)
     if (doubleRange != null) verifyDoubleRange(rhs, doubleRange, context, reporter)
@@ -278,6 +283,42 @@ private fun knownConstraints(expr: FirExpression?, session: FirSession): Set<Con
 
     is FirDesugaredAssignmentValueReferenceExpression ->
         knownConstraints(expr.expressionRef.value, session)
+
+    else -> emptySet()
+}
+
+/**
+ * Reports [CONSTRAINT_NOT_VALIDATED] unless every `@ElementConstraint` key in [required] is
+ * satisfied by [rhs] -- i.e. the RHS is a variable already declared with the same element
+ * constraint (transfer proof). Returns true if an error was reported.
+ */
+private fun verifyElementConstraints(
+    required: Set<ConstraintKey>,
+    rhs: FirExpression,
+    context: CheckerContext,
+    reporter: DiagnosticReporter,
+): Boolean {
+    if (required.isEmpty() || isCheckConstraints(rhs)) return false
+    val missing = required - knownElementConstraints(rhs, context.session)
+    if (missing.isEmpty()) return false
+    val names = missing.joinToString(", ") { it.render() }
+    reporter.reportOn(
+        rhs.source,
+        ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+        "Cannot prove all elements of this collection satisfy $names: element constraints cannot be " +
+            "checked statically. Wrap it in checkConstraint(value) to validate at runtime, or assign " +
+            "from a collection already known to have all elements satisfying the same constraint.",
+        context,
+    )
+    return true
+}
+
+private fun knownElementConstraints(expr: FirExpression?, session: FirSession): Set<ConstraintKey> = when (expr) {
+    is FirPropertyAccessExpression ->
+        expr.calleeReference.toResolvedVariableSymbol()?.elementConstraintKeys(session) ?: emptySet()
+
+    is FirDesugaredAssignmentValueReferenceExpression ->
+        knownElementConstraints(expr.expressionRef.value, session)
 
     else -> emptySet()
 }
@@ -470,6 +511,33 @@ private fun FirVariableSymbol<*>.runtimeConstraintKeys(session: FirSession): Set
 /** The set of runtime-only constraints (by [ConstraintKey]) on this callable's return type. */
 private fun FirCallableSymbol<*>.returnTypeConstraintKeys(session: FirSession): Set<ConstraintKey> =
     resolvedReturnType.customAnnotations.mapNotNull { it.runtimeConstraintKey(session) }.toSet()
+
+/** The set of element constraints (by [ConstraintKey]) this variable is declared to satisfy on its elements. */
+private fun FirVariableSymbol<*>.elementConstraintKeys(session: FirSession): Set<ConstraintKey> =
+    resolvedAnnotationsWithArguments.mapNotNull { it.elementConstraintKey(session) }.toSet()
+
+/** The set of element constraints (by [ConstraintKey]) on this callable's return-type elements. */
+private fun FirCallableSymbol<*>.returnTypeElementConstraintKeys(session: FirSession): Set<ConstraintKey> =
+    resolvedReturnType.customAnnotations.mapNotNull { it.elementConstraintKey(session) }.toSet()
+
+/**
+ * The [ConstraintKey] of this annotation if it is an element constraint -- i.e. its class is
+ * meta-annotated `@ElementConstraint(...)`. Null if any argument can't be read as a comparable
+ * value, conservatively requiring `checkConstraint`.
+ */
+private fun FirAnnotation.elementConstraintKey(session: FirSession): ConstraintKey? {
+    val classId = toAnnotationClassId(session) ?: return null
+    if (!isElementConstraintAnnotation(session)) return null
+    val arguments = comparableArguments() ?: return null
+    return ConstraintKey(classId, arguments)
+}
+
+/** True if this annotation's class is meta-annotated `@ElementConstraint(...)`. */
+private fun FirAnnotation.isElementConstraintAnnotation(session: FirSession): Boolean {
+    val classId = toAnnotationClassId(session) ?: return false
+    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return false
+    return classSymbol.resolvedAnnotationsWithArguments.any { it.toAnnotationClassId(session) == ELEMENT_CONSTRAINT_CLASS_ID }
+}
 
 /**
  * The [ConstraintKey] of this annotation if it is a *runtime-only* `@Constraint` -- i.e. its class
