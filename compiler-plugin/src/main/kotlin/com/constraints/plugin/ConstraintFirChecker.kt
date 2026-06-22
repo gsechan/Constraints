@@ -53,6 +53,7 @@ private val BYTE_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name
 private val SHORT_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ShortDivisibleBy"))
 private val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
 private val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongDivisibleBy"))
+private val STRING_LENGTH_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("StringLength"))
 private val CONSTRAINT_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Constraint"))
 private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 
@@ -65,6 +66,7 @@ private val BUILTIN_ANALYZED = setOf(
     BYTE_RANGE_CLASS_ID, SHORT_RANGE_CLASS_ID, INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID,
     FLOAT_RANGE_CLASS_ID, DOUBLE_RANGE_CLASS_ID,
     BYTE_DIVISIBLE_BY_CLASS_ID, SHORT_DIVISIBLE_BY_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
+    STRING_LENGTH_CLASS_ID,
 )
 
 // The interval lattice ([Interval]) and its arithmetic ([NumericDomain]) -- the pure-Kotlin range
@@ -124,6 +126,7 @@ object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Commo
         if (verifyRuntimeConstraints(function.symbol.returnTypeConstraintKeys(context.session), result, context, reporter)) return
         function.symbol.returnTypeRange(context.session)?.let { verifyRange(result, it, context, reporter) }
         function.symbol.returnTypeDoubleRange(context.session)?.let { verifyDoubleRange(result, it, context, reporter) }
+        function.symbol.returnTypeStringLength(context.session)?.let { verifyStringLength(result, it, context, reporter) }
         function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(result, it, context, reporter) }
     }
 }
@@ -202,6 +205,7 @@ private fun FirAnnotation.validatorClassId(): ClassId? {
  *    opaque validator, so it needs `checkConstraint`.
  *  - `@IntRange` / `@LongRange` / `@ShortRange` / `@ByteRange`: proven by interval inference ([verifyRange]).
  *  - `@FloatRange` / `@DoubleRange`: proven by double-interval inference ([verifyDoubleRange]).
+ *  - `@StringLength`: proven by string-length inference ([verifyStringLength]).
  *  - `@DivisibleBy` / `@LongDivisibleBy` etc.: proven by residue inference ([verifyDivisibility]).
  */
 private fun verifyConstraints(
@@ -213,17 +217,19 @@ private fun verifyConstraints(
     val required = symbol.runtimeConstraintKeys(context.session)
     val range = symbol.rangeTarget(context.session)
     val doubleRange = symbol.doubleRangeTarget(context.session)
+    val stringLength = symbol.stringLengthTarget(context.session)
     val divisibility = symbol.divisibleBy(context.session)
-    if (required.isEmpty() && range == null && doubleRange == null && divisibility == null) return
+    if (required.isEmpty() && range == null && doubleRange == null && stringLength == null && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isCheckConstraints(rhs)) return
 
-    // Runtime-only constraints first; if one is unsatisfied, stop (don't pile on a range/divisibility error).
+    // Runtime-only constraints first; if one is unsatisfied, stop (don't pile on other errors).
     if (verifyRuntimeConstraints(required, rhs, context, reporter)) return
 
     if (range != null) verifyRange(rhs, range, context, reporter)
     if (doubleRange != null) verifyDoubleRange(rhs, doubleRange, context, reporter)
+    if (stringLength != null) verifyStringLength(rhs, stringLength, context, reporter)
     if (divisibility != null) verifyDivisibility(rhs, divisibility, context, reporter)
 }
 
@@ -320,6 +326,28 @@ private fun verifyDoubleRange(rhs: FirExpression, target: DoubleRangeTarget, con
     } else {
         "Value range [${inferred.min}, ${inferred.max}] does not match $label: " +
             "the ranges do not overlap, so it can never be valid."
+    }
+    reporter.reportOn(rhs.source, ConstraintErrors.INTRANGE_NOT_VERIFIED, message, context)
+}
+
+/**
+ * Reports an error unless the length of [rhs] is provably within [target]'s bounds.
+ * Proven for literals (exact length), concatenation (sum of length ranges), and same-or-narrower
+ * @StringLength transfers. All other expressions require `checkConstraint`.
+ */
+private fun verifyStringLength(rhs: FirExpression, target: StringLengthTarget, context: CheckerContext, reporter: DiagnosticReporter) {
+    if (isCheckConstraints(rhs)) return
+    val bounds = target.interval
+    val inferred = inferStringLength(rhs, context.session)
+    if (inferred.subsetOf(bounds)) return
+
+    val label = "@StringLength(${bounds.min}, ${bounds.max})"
+    val message = if (inferred.isUnknown || inferred.overlaps(bounds)) {
+        "Cannot prove this satisfies $label: its length cannot be determined statically. " +
+            "Wrap it in checkConstraint(value) to check at runtime."
+    } else {
+        "String length [${inferred.min}, ${inferred.max}] does not match $label: " +
+            "the length ranges do not overlap, so it can never be valid."
     }
     reporter.reportOn(rhs.source, ConstraintErrors.INTRANGE_NOT_VERIFIED, message, context)
 }
@@ -542,6 +570,47 @@ private fun readDoubleInterval(range: FirAnnotation): DoubleInterval? {
 // inferDoubleInterval lives in FloatInference.kt alongside the FIR-tree walk for arithmetic.
 
 private fun FirAnnotation.doubleArgument(name: String): Double? {
+    val expr = argumentMapping.mapping.entries.firstOrNull { it.key.asString() == name }?.value
+    return ((expr as? FirLiteralExpression)?.value as? Number)?.toDouble()
+}
+
+// ---------------------------------------------------------------------------
+// String-length targets (@StringLength)
+//
+// Tracks the *length* of a CharSequence value as an Interval (non-negative Int).
+// The inference lives in StringLengthInference.kt.
+// ---------------------------------------------------------------------------
+
+/** A @StringLength constraint: its min/max bounds expressed as an [Interval] of lengths. */
+internal class StringLengthTarget(val interval: Interval)
+
+/** The @StringLength constraint on this variable, directly or via an alias. */
+internal fun FirVariableSymbol<*>.stringLengthTarget(session: FirSession): StringLengthTarget? =
+    resolvedAnnotationsWithArguments.firstNotNullOfOrNull { it.stringLengthTarget(session) }
+
+/** The @StringLength constraint on this callable's return type, directly or via an alias. */
+internal fun FirCallableSymbol<*>.returnTypeStringLength(session: FirSession): StringLengthTarget? =
+    resolvedReturnType.customAnnotations.firstNotNullOfOrNull { it.stringLengthTarget(session) }
+
+/**
+ * The StringLengthTarget this annotation carries (directly or via alias), or null.
+ * Mirrors [rangeTarget]: direct if this annotation IS `@StringLength`, or via a
+ * `@StringLength` meta-annotation on this annotation's class (alias case).
+ */
+internal fun FirAnnotation.stringLengthTarget(session: FirSession): StringLengthTarget? {
+    if (toAnnotationClassId(session) == STRING_LENGTH_CLASS_ID) return readStringLength(this)
+    val classId = toAnnotationClassId(session) ?: return null
+    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
+    return classSymbol.resolvedAnnotationsWithArguments.firstNotNullOfOrNull {
+        if (it.toAnnotationClassId(session) == STRING_LENGTH_CLASS_ID) readStringLength(it) else null
+    }
+}
+
+private fun readStringLength(annotation: FirAnnotation): StringLengthTarget? {
+    val min = annotation.longArgument("min") ?: return null
+    val max = annotation.longArgument("max") ?: return null
+    return StringLengthTarget(Interval(min, max))
+}
     val expr = argumentMapping.mapping.entries.firstOrNull { it.key.asString() == name }?.value
     return ((expr as? FirLiteralExpression)?.value as? Number)?.toDouble()
 }
