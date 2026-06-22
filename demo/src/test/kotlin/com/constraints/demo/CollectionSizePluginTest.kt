@@ -2,6 +2,7 @@ package com.constraints.demo
 
 import com.constraints.CollectionSize
 import com.constraints.ConstraintException
+import com.constraints.NonEmptyCollection
 import com.constraints.checkConstraint
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -133,10 +134,33 @@ class CollectionSizePluginTest {
         }
     }
 
+    // --- @NonEmptyCollection alias ---
+
+    @Test
+    fun `NonEmptyCollection alias accepts a non-empty factory result`() {
+        @NonEmptyCollection val list = listOf(1, 2, 3)
+        assertEquals(3, list.size)
+    }
+
+    @Test
+    fun `NonEmptyCollection adding an element to empty stays non-empty`() {
+        @NonEmptyCollection val list = emptyList<Int>() + 1  // [0,0]+1 = [1,1] ⊆ [1,MAX]
+        assertEquals(1, list.size)
+    }
+
+    @Test
+    fun `NonEmptyCollection checkConstraint throws for empty collection`() {
+        assertFailsWith<ConstraintException> {
+            @NonEmptyCollection val list = checkConstraint(emptyList<Int>())
+            println(list)
+        }
+    }
+
     // -----------------------------------------------------------------------
     // These do NOT compile:
     //   @CollectionSize(5, 5) val x = listOf(1, 2)   // size 2 not in [5, 5]
     //   @CollectionSize(1, 5) val y = someCollection  // size unknown: needs checkConstraint
     //   @CollectionSize(4, 4) val z = list + otherList // both need @CollectionSize to prove
+    //   @NonEmptyCollection val w = emptyList()       // size 0 not in [1, MAX_VALUE]
     // -----------------------------------------------------------------------
 }

@@ -1,6 +1,7 @@
 package com.constraints.demo
 
 import com.constraints.ConstraintException
+import com.constraints.NonEmptyString
 import com.constraints.StringLength
 import com.constraints.checkConstraint
 import org.junit.jupiter.api.Test
@@ -84,9 +85,26 @@ class StringLengthPluginTest {
         }
     }
 
+    // --- @NonEmptyString alias ---
+
+    @Test
+    fun `NonEmptyString alias accepts a non-empty literal`() {
+        @NonEmptyString val s = "hello"
+        assertEquals("hello", s)
+    }
+
+    @Test
+    fun `NonEmptyString checkConstraint throws for empty string`() {
+        assertFailsWith<ConstraintException> {
+            @NonEmptyString val s = checkConstraint("")
+            println(s)
+        }
+    }
+
     // -----------------------------------------------------------------------
     // These do NOT compile:
     //   @StringLength(1, 3) val x = "hello"       // length 5 not in [1, 3]
     //   @StringLength(1, 5) val y = userInput     // length unknown: needs checkConstraint
+    //   @NonEmptyString val z = ""               // length 0 not in [1, MAX_VALUE]
     // -----------------------------------------------------------------------
 }
