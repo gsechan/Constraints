@@ -47,6 +47,8 @@ private val BYTE_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identi
 private val SHORT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ShortRange"))
 private val INT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("IntRange"))
 private val LONG_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongRange"))
+private val FLOAT_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("FloatRange"))
+private val DOUBLE_RANGE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DoubleRange"))
 private val BYTE_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ByteDivisibleBy"))
 private val SHORT_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ShortDivisibleBy"))
 private val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
@@ -61,6 +63,7 @@ private val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.ide
  */
 private val BUILTIN_ANALYZED = setOf(
     BYTE_RANGE_CLASS_ID, SHORT_RANGE_CLASS_ID, INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID,
+    FLOAT_RANGE_CLASS_ID, DOUBLE_RANGE_CLASS_ID,
     BYTE_DIVISIBLE_BY_CLASS_ID, SHORT_DIVISIBLE_BY_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
 )
 
@@ -120,6 +123,7 @@ object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Commo
         // Runtime-only constraints on the return type; if unsatisfied, stop (as in verifyConstraints).
         if (verifyRuntimeConstraints(function.symbol.returnTypeConstraintKeys(context.session), result, context, reporter)) return
         function.symbol.returnTypeRange(context.session)?.let { verifyRange(result, it, context, reporter) }
+        function.symbol.returnTypeDoubleRange(context.session)?.let { verifyDoubleRange(result, it, context, reporter) }
         function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(result, it, context, reporter) }
     }
 }
@@ -196,8 +200,9 @@ private fun FirAnnotation.validatorClassId(): ClassId? {
  *    pure (a stateless predicate on the value and annotation), so a value that satisfied the
  *    constraint when written still does. A literal or arithmetic result can't be proven against an
  *    opaque validator, so it needs `checkConstraint`.
- *  - `@IntRange` / `@LongRange`: proven by interval inference ([verifyRange]).
- *  - `@DivisibleBy` / `@LongDivisibleBy`: proven by residue inference ([verifyDivisibility]).
+ *  - `@IntRange` / `@LongRange` / `@ShortRange` / `@ByteRange`: proven by interval inference ([verifyRange]).
+ *  - `@FloatRange` / `@DoubleRange`: proven by double-interval inference ([verifyDoubleRange]).
+ *  - `@DivisibleBy` / `@LongDivisibleBy` etc.: proven by residue inference ([verifyDivisibility]).
  */
 private fun verifyConstraints(
     symbol: FirVariableSymbol<*>,
@@ -207,8 +212,9 @@ private fun verifyConstraints(
 ) {
     val required = symbol.runtimeConstraintKeys(context.session)
     val range = symbol.rangeTarget(context.session)
+    val doubleRange = symbol.doubleRangeTarget(context.session)
     val divisibility = symbol.divisibleBy(context.session)
-    if (required.isEmpty() && range == null && divisibility == null) return
+    if (required.isEmpty() && range == null && doubleRange == null && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isCheckConstraints(rhs)) return
@@ -217,6 +223,7 @@ private fun verifyConstraints(
     if (verifyRuntimeConstraints(required, rhs, context, reporter)) return
 
     if (range != null) verifyRange(rhs, range, context, reporter)
+    if (doubleRange != null) verifyDoubleRange(rhs, doubleRange, context, reporter)
     if (divisibility != null) verifyDivisibility(rhs, divisibility, context, reporter)
 }
 
@@ -288,6 +295,29 @@ private fun verifyRange(rhs: FirExpression, target: RangeTarget, context: Checke
     } else {
         // Disjoint ranges: the value can never be valid, so a runtime check would
         // always fail -- report it as a definite mismatch instead.
+        "Value range [${inferred.min}, ${inferred.max}] does not match $label: " +
+            "the ranges do not overlap, so it can never be valid."
+    }
+    reporter.reportOn(rhs.source, ConstraintErrors.INTRANGE_NOT_VERIFIED, message, context)
+}
+
+/**
+ * Reports an error unless [rhs] is provably within [target]'s floating point bounds. Literals,
+ * same-range transfers, and arithmetic (`+ - * / inc dec unaryMinus`) are proven where possible.
+ * If arithmetic overflows to Infinity the result widens to UNKNOWN and `checkConstraint` is
+ * required. Minor rounding at boundaries is accepted as a known trade-off.
+ */
+private fun verifyDoubleRange(rhs: FirExpression, target: DoubleRangeTarget, context: CheckerContext, reporter: DiagnosticReporter) {
+    if (isCheckConstraints(rhs)) return
+    val bounds = target.interval
+    val inferred = inferDoubleInterval(rhs, context.session)
+    if (inferred.subsetOf(bounds)) return // statically proven in range -> no runtime check needed
+
+    val label = "${target.label}(${bounds.min}, ${bounds.max})"
+    val message = if (inferred.isUnknown || inferred.overlaps(bounds)) {
+        "Cannot prove this satisfies $label: its range cannot be determined statically. " +
+            "Wrap it in checkConstraint(value) to check at runtime."
+    } else {
         "Value range [${inferred.min}, ${inferred.max}] does not match $label: " +
             "the ranges do not overlap, so it can never be valid."
     }
@@ -467,6 +497,53 @@ private fun readInterval(range: FirAnnotation): Interval? {
     val min = range.longArgument("min") ?: return null
     val max = range.longArgument("max") ?: return null
     return Interval(min, max)
+}
+
+// ---------------------------------------------------------------------------
+// Floating-point range targets (@FloatRange / @DoubleRange)
+//
+// Uses DoubleInterval rather than Interval (Long-based) -- Float/Double bounds can't be
+// represented losslessly in Long. Arithmetic is NOT tracked (see DoubleInterval).
+// ---------------------------------------------------------------------------
+
+/** A Float/Double range constraint: its bounds and a display label. */
+internal class DoubleRangeTarget(val interval: DoubleInterval, val label: String)
+
+/** The floating-point range constraint on this variable, directly or via an alias. */
+internal fun FirVariableSymbol<*>.doubleRangeTarget(session: FirSession): DoubleRangeTarget? =
+    resolvedAnnotationsWithArguments.firstNotNullOfOrNull { it.doubleRangeTarget(session) }
+
+/** The floating-point range constraint on this callable's return type, directly or via an alias. */
+internal fun FirCallableSymbol<*>.returnTypeDoubleRange(session: FirSession): DoubleRangeTarget? =
+    resolvedReturnType.customAnnotations.firstNotNullOfOrNull { it.doubleRangeTarget(session) }
+
+/** The DoubleRangeTarget this annotation carries (directly or via alias), or null. */
+internal fun FirAnnotation.doubleRangeTarget(session: FirSession): DoubleRangeTarget? {
+    doubleRangeTargetFor(toAnnotationClassId(session), this)?.let { return it }
+    val classId = toAnnotationClassId(session) ?: return null
+    val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
+    return classSymbol.resolvedAnnotationsWithArguments.firstNotNullOfOrNull {
+        doubleRangeTargetFor(it.toAnnotationClassId(session), it)
+    }
+}
+
+private fun doubleRangeTargetFor(classId: ClassId?, range: FirAnnotation): DoubleRangeTarget? = when (classId) {
+    FLOAT_RANGE_CLASS_ID -> readDoubleInterval(range)?.let { DoubleRangeTarget(it, "@FloatRange") }
+    DOUBLE_RANGE_CLASS_ID -> readDoubleInterval(range)?.let { DoubleRangeTarget(it, "@DoubleRange") }
+    else -> null
+}
+
+private fun readDoubleInterval(range: FirAnnotation): DoubleInterval? {
+    val min = range.doubleArgument("min") ?: return null
+    val max = range.doubleArgument("max") ?: return null
+    return DoubleInterval(min, max)
+}
+
+// inferDoubleInterval lives in FloatInference.kt alongside the FIR-tree walk for arithmetic.
+
+private fun FirAnnotation.doubleArgument(name: String): Double? {
+    val expr = argumentMapping.mapping.entries.firstOrNull { it.key.asString() == name }?.value
+    return ((expr as? FirLiteralExpression)?.value as? Number)?.toDouble()
 }
 
 /** A divisibility constraint: the value must be congruent to [remainder] modulo [divisor]. */
