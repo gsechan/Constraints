@@ -30,6 +30,7 @@ internal val COLLECTION_SIZE_CLASS_ID = ClassId(FqName("com.constraints"), Name.
 internal val CONSTRAINT_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Constraint"))
 internal val ELEMENT_CONSTRAINT_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ElementConstraint"))
 internal val CHECK_CONSTRAINT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
+internal val CHECK_CONSTRAINT_OR_DEFAULT_ID = CallableId(FqName("com.constraints"), Name.identifier("checkConstraintOrDefault"))
 
 /**
  * Constraints the checker analyzes statically (interval for ranges, residue for divisibility, etc.).
@@ -43,11 +44,19 @@ internal val BUILTIN_ANALYZED = setOf(
     STRING_LENGTH_CLASS_ID, COLLECTION_SIZE_CLASS_ID,
 )
 
-/** True if [expr] is a bare 1-arg `checkConstraint(value)` escape hatch. */
-internal fun isCheckConstraints(expr: FirExpression?): Boolean =
-    expr is FirFunctionCall &&
-        expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId == CHECK_CONSTRAINT_ID &&
-        expr.arguments.size == 1
+/**
+ * True if [expr] is an escape-hatch call the IR backend will fill in: `checkConstraint(value)` or
+ * `checkConstraintOrDefault(value, default)`. Either defers all static proof to the injected
+ * runtime check, so the FIR checkers accept the assignment without inferring anything.
+ */
+internal fun isCheckConstraints(expr: FirExpression?): Boolean {
+    if (expr !is FirFunctionCall) return false
+    return when (expr.calleeReference.toResolvedNamedFunctionSymbol()?.callableId) {
+        CHECK_CONSTRAINT_ID -> expr.arguments.size == 1
+        CHECK_CONSTRAINT_OR_DEFAULT_ID -> expr.arguments.size == 2
+        else -> false
+    }
+}
 
 /** Reads a Long-valued annotation argument by name (FIR stores integer literals as Long). */
 internal fun FirAnnotation.longArgument(name: String): Long? {
