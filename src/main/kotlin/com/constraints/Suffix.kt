@@ -3,9 +3,10 @@ package com.constraints
 /**
  * Requires a [CharSequence] to end with [suffix] (`value.endsWith(suffix)`).
  *
- * A runtime constraint: the validator runs arbitrary code, so the plugin can't prove it statically.
- * Assign through `checkConstraint(value)`, or from a value already declared with the identical
- * `@Suffix`. Deliberately *not* built on `@Matches` -- it costs a single `endsWith`, never a regex.
+ * Proven at compile time when assigned a string literal (checked with a cheap `endsWith`, no regex)
+ * or a value already declared with the identical `@Suffix`; a literal that does not end with
+ * [suffix] is a compile error. Any other (dynamic) value needs `checkConstraint(value)`.
+ * Deliberately *not* built on `@Matches` -- it costs a single `endsWith`, never a regex.
  *
  * (The parameter is `String` rather than `CharSequence` because annotation arguments can only be
  * `String`; the validated value is still any `CharSequence`.)

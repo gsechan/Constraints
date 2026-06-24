@@ -4,9 +4,10 @@ package com.constraints
  * Requires a [CharSequence] to fully match the regular expression [regex] -- the whole value, not a
  * substring (`regex.toRegex().matches(value)`).
  *
- * A runtime constraint: the regex is compiled and matched at runtime, **never in the compiler**.
- * Assign through `checkConstraint(value)`, or from a value already declared with the identical
- * `@Matches`.
+ * Proven at compile time when assigned a string literal (the regex runs against the literal **only**,
+ * never against an arbitrary expression) or a value already declared with the identical `@Matches`;
+ * a literal that does not match is a compile error. Any other (dynamic) value needs
+ * `checkConstraint(value)`, where the regex is compiled and matched at runtime.
  *
  * (The parameter is `String` rather than `CharSequence` because annotation arguments can only be
  * `String`; the validated value is still any `CharSequence`.)
