@@ -15,8 +15,10 @@ val constraintsPlugin: Configuration by configurations.creating {
 }
 
 dependencies {
-    implementation(project(":runtime"))
-    constraintsPlugin(project(":compiler-plugin"))
+    // The root project is the merged library: annotations on the normal classpath,
+    // and the same jar (which carries the plugin + its service registration) for -Xplugin.
+    implementation(project(":"))
+    constraintsPlugin(project(":"))
 
     testImplementation(platform("org.junit:junit-bom:5.11.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
