@@ -1,12 +1,8 @@
 # Constraints
 
-The constraints library is a compiler plugin that brings refinement types to kotlin.  What it allows you to do is to specify a subset of values of a type that are allowed to be stored in a value, parameter, or returned by a function.  This makes it literally impossible to pass a bad value to a function, and in many cases actually becomes a compile time error to do so.
+The constraints library is a compiler plugin that brings refinement types to kotlin.  What it allows you to do is to specify a subset of values of a type that are allowed to be stored in a value, parameter, or returned by a function.  This makes it literally impossible to pass a bad value to a function, and in many cases actually becomes a compile time error to do so. This isn't a new idea, many functional languages have it.  But surprisingly enough, so does Kotlin to a small degree.  You can really consider String to be a constrained version of String?  where the constraint is that the value is not null.  Explicit nullability has solved a lot of bugs, and this library attempts to generalize that to more usecases.
 
-## Is this a common concept?
-
-Many functional languages have it.  But surprisingly enough-  so does Kotlin, to a small degree.  You can really consider String to be a constrained version of String?  where the constraint is that the value is not null.  Explicit nullability has solved a lot of bugs, and this library attempts to generalize that to more usecases.
-
-## Why use constraints?
+## Advantages of constraints
 
 ### Explicitness
 Constraints have several advantages in programming.  First, they make the contracts of your function explicit.  Say that your algorithm only works for values between 1 and 100.  Without constraints, you need to write
@@ -39,6 +35,7 @@ Constraints reduce the amount of test code you need to write.  They actually mak
 Most constrained values can be tested at compile time rather than runtime.  For example:
 
 ```kotlin
+fun myFunc(@IntRange(1, 100) value: Int)  {}
 @IntRange(200,500) val a = 500
 myfunc(a)  //Error-  no overlap of ranges
 ```
@@ -48,6 +45,7 @@ This will cause a compiler error because it's impossible for a number from [200,
 There are places where numbers come without a known range.  For example:
 
 ```kotlin
+fun myFunc(@IntRange(1, 100) value: Int) {
 val a = readFromInput()
 myFunc(a)  //Error-  unchecked constraint passed to constrained value
 ```
@@ -56,19 +54,19 @@ The way to get around here is
 
 ```kotlin
 val a = readFromInput()
-myFund(checkConstraint(a))
+myFunc(checkConstraint(a))
 ```
-checkConstraint will check the constraints on the receiver and throw a ConstraintException if they are not satisfied.  This is why you can be assured that a value being written to a variable will always satisfy the constraints.  While this won't be done at compile time (as we can't know the value until runtime), it does throw the exception 1 level up, which can speed triaging it to the right developer in the case of APIs, and its more explicit about what went wrong.
+checkConstraint will check the constraints on the receiver and throw a ConstraintException if they are not satisfied.  This is why you can be assured that a value being written to a variable will always satisfy the constraints.  While this won't be done at compile time (as we can't know the value until runtime), it does throw the exception 1 level up, which can speed triaging it to the right developer in the case of APIs, and its more explicit about what went wrong.  It also still means that myFunc can be written assuming it will never get a bad value
 
-## How does it work
+## Using the library
 
-All you need to do is annotate the functions returns, parameters, and variables you wish to constrain with the appropriate constraint.  The library includes a compiler plugin that tracks what annotations are put one each variable and will throw a compiler error if you attempt to assign a value without the right annotation (either directly or inferred) into  a value with one.  
+All you need to do is annotate the functions returns, parameters, and variables you wish to constrain with the appropriate constraint.  The library includes a compiler plugin that tracks what annotations are put one each variable and will throw a compiler error if you attempt to assign a value without the right annotation (either directly or inferred) into a receiver with one.  
 
 ### What if I need data from some unannotated source?
 
 You have two options in this case-  checkConstraints or checkConstraintsOrDefault.  Both of these functions will check that if a value passed in passes all the constraints for the receiver.  If it does, the value is used.  If it does not, checkConstraints will throw a ConstraintException, and checkConstrainsOrDefault will return a default value.  Think of it like !! and ?: for nullability.  Obviously this means you only have protection at runtime instead of compile time, but it still provides all the other benefits, and is one step closer to the actual problem than checking for a bad value inside the function you wanted to call (or worse, not checking and failing somewhere else).
 
-## What type of constraints are there?
+## Types of constraints
 
 There are a few builtin constraints, plus the ability to build custom ones.
 
@@ -77,8 +75,9 @@ There are a few builtin constraints, plus the ability to build custom ones.
 
 Range constraints are @IntRange, @ShortRange, @ByteRange, @LongRange, @FloatRange, and @DoubleRange.  All take a minimum and maximum value, inclusive.  They force the value to be inside that range.  The compiler is fairly smart about this, it can track the valid range of literals coming in (so it knows a 9 is [9,9]) and track ranges across mathematical expressions (so it knows if a is in [1,3] and b is in [5,10], the result is in [6,13]).  It also knows that if you assign a value with range [1,3] to a variable with range [1,10] that it's ok, because [1,10] is a superset.  If the ranges of two values do not overlap at all, it becomes a hard compiler error.  If the two ranges do have overlap but not total overlap, it will cause a compiler error unless you call checkConstraints to validate at runtime.  It will also error if you try to divide by a range including 0.
 
-We also have several aliases for common ranges, such as PositiveInteger and NegativeInteger.  You may also make your own aliases that keep all the power of compiler tracking by making an alias annotation:
+We also have several aliases for common ranges, such as PositiveInteger (1 or more), NegativeInteger (-1 or less), NonNegativeInteger (0 or more) and NonPositiveInteger (0 or less).  You may also make your own aliases that keep all the power of compiler tracking by making an alias annotation:
 
+```kotlin
 @IntRange(myMinVal, myMaxVal)
 @Target(
 AnnotationTarget.LOCAL_VARIABLE,
@@ -89,7 +88,7 @@ AnnotationTarget.TYPE,
 )
 @Retention(AnnotationRetention.SOURCE)
 annotation class MyRange
-
+```
 
 #### Divisibility and remainder
 
@@ -137,7 +136,7 @@ This will create an annotation that is only satisfied by 0-9.  The @Target and @
 
 This library does make it possible to do custom constraints, but with a caveat.  Since we don't know what the constraint is, it must all be done at runtime.  A custom constraint has two parts: a `Validator` object that does the checking, and a constraint annotation that links to it via `@Constraint`.
 
-First write the validator. It implements `Validator<T, A>`, where `T` is the value type and `A` is the annotation it enforces. `validate` returns nothing -- throw to reject a value, return normally to accept it. It cannot change the value (a constraint validates, it does not coerce):
+First write the validator. It implements `Validator<T, A>`, where `T` is the value type and `A` is the annotation it enforces. `validate` returns nothing -- throw to reject a value, return normally to accept it. It cannot change the value (a constraint validates, it does not coerce).  The signature for Validator is:
 
 ```kotlin
 interface Validator<T, A : Annotation> {
@@ -193,6 +192,8 @@ For the most part, these checks run at compile time, so while they may affect bu
 
 ## Installing the library
 
+You must be using at least kotlin 2.2.21.  This version made changes to the compiler plugin system that this library is built on top of.
+
 Simply add the following to your build.gradle:
 
 ```
@@ -210,6 +211,8 @@ configurations
     dependencies.add(project.dependencies.create('com.gabesechansoftware.constraints:constraints:1.0.0'))
 }
 ```
+
+If you want to see error in your IDE in realtime without needing to do a gradle build, you must also enable k2 mode.  In IntelliJ, it should be enabled by default.  In Android studio, it needs to be enabled manually.
 
 ## Roadmap
 
