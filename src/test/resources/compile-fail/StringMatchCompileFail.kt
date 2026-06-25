@@ -23,6 +23,10 @@ fun test() {
     // operand of `+` carries the prefix).
     @Prefix("foo") val f = dynamic + "foo" // ERROR: Cannot prove this satisfies @Prefix
 
+    // Dually, putting the suffix on the LEFT of an unknown value doesn't establish it (only the
+    // right operand of `+` carries the suffix).
+    @Suffix("bar") val g = "bar" + dynamic // ERROR: Cannot prove this satisfies @Suffix
+
     // Transfer from a different prefix argument is not proven.
     @Prefix("foo") val src = checkConstraint("foobar")
     @Prefix("bar") val e = src             // ERROR: Cannot prove this satisfies @Prefix

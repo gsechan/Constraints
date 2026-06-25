@@ -97,6 +97,10 @@ internal fun verifyStringMatches(
         if (target.kind == StringMatchKind.PREFIX && provablyStartsWith(rhs, target.pattern, context.session)) {
             continue
         }
+        // @Suffix is the dual -- closed under prepending: `"head " + someBarSuffixed` still ends with it.
+        if (target.kind == StringMatchKind.SUFFIX && provablyEndsWith(rhs, target.pattern, context.session)) {
+            continue
+        }
 
         val proven: Boolean? = when {
             literal != null -> target.satisfiedBy(literal) // Boolean? -- null only for an invalid @Matches regex
@@ -122,9 +126,9 @@ internal fun verifyStringMatches(
             ) else reporter.reportOn(
                 rhs.source,
                 ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-                "Cannot prove this satisfies ${target.label}: only string literals, `<prefixed> + …` for " +
-                    "@Prefix, and values already known to satisfy the same constraint are checked statically. " +
-                    "Wrap it in checkConstraint(value) to check at runtime.",
+                "Cannot prove this satisfies ${target.label}: only string literals, prefix/suffix-preserving " +
+                    "concatenation, and values already known to satisfy the same constraint are checked " +
+                    "statically. Wrap it in checkConstraint(value) to check at runtime.",
                 context,
             )
         }
@@ -154,6 +158,32 @@ private fun provablyStartsWith(expr: FirExpression?, prefix: String, session: Fi
             .any { it.kind == StringMatchKind.PREFIX && it.pattern.startsWith(prefix) }
 
     is FirDesugaredAssignmentValueReferenceExpression -> provablyStartsWith(expr.expressionRef.value, prefix, session)
+
+    else -> false
+}
+
+/**
+ * The dual of [provablyStartsWith]: true if [expr] provably ends with [suffix]. A `+` concatenation
+ * (or string template) is proven when its right/last operand provably does -- prepending on the left
+ * can't change the end -- and a variable when its declared `@Suffix` is at least as specific.
+ */
+private fun provablyEndsWith(expr: FirExpression?, suffix: String, session: FirSession): Boolean = when (expr) {
+    is FirLiteralExpression -> (expr.value as? String)?.endsWith(suffix) ?: false
+
+    // String template "a $b" -- the last piece determines the end.
+    is FirStringConcatenationCall -> provablyEndsWith(expr.arguments.lastOrNull(), suffix, session)
+
+    is FirFunctionCall ->
+        // `a + b` desugars to `a.plus(b)`; the argument (b) is the right operand and determines the end.
+        if (expr.calleeReference.toResolvedNamedFunctionSymbol()?.name?.asString() == "plus")
+            provablyEndsWith(expr.arguments.firstOrNull(), suffix, session)
+        else false
+
+    is FirPropertyAccessExpression ->
+        expr.calleeReference.toResolvedVariableSymbol()?.stringMatchTargets(session).orEmpty()
+            .any { it.kind == StringMatchKind.SUFFIX && it.pattern.endsWith(suffix) }
+
+    is FirDesugaredAssignmentValueReferenceExpression -> provablyEndsWith(expr.expressionRef.value, suffix, session)
 
     else -> false
 }

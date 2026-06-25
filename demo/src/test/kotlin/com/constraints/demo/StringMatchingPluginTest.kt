@@ -74,6 +74,22 @@ class StringMatchingPluginTest {
         assertEquals("foo!xy", b)
     }
 
+    // --- @Suffix is closed under prepending (the dual) ---
+
+    @Test
+    fun `prepending to a suffixed value preserves the suffix`() {
+        @Suffix("bar") val a = "mebar"
+        @Suffix("bar") val b = "and me " + a   // a ends with "bar", so anything + a does too
+        assertEquals("and me mebar", b)
+    }
+
+    @Test
+    fun `dynamic head concatenated with a literal suffix compiles`() {
+        val head = "anything"
+        @Suffix("bar") val b = head + "bar"    // right literal "bar" carries the suffix
+        assertEquals("anythingbar", b)
+    }
+
     // --- Dynamic values via checkConstraint ---
 
     @Test
