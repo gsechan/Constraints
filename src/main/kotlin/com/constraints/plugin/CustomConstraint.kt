@@ -17,7 +17,9 @@ import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirRegularClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirVariableSymbol
+import org.jetbrains.kotlin.fir.types.ConeKotlinType
 import org.jetbrains.kotlin.fir.types.customAnnotations
+import org.jetbrains.kotlin.fir.types.type
 import org.jetbrains.kotlin.name.ClassId
 
 // ===========================================================================
@@ -197,6 +199,66 @@ private fun knownElementConstraints(expr: FirExpression?, session: FirSession): 
 
     is FirDesugaredAssignmentValueReferenceExpression ->
         knownElementConstraints(expr.expressionRef.value, session)
+
+    else -> emptySet()
+}
+
+// --- Element-TYPE constraints: annotations on a collection's element type argument ---
+//
+// `List<@IntRange(0, 10) Int>` -- the `@IntRange(0, 10)` is on the element type, and means "every
+// element satisfies it". Treated like an @ElementConstraint, but sourced from the type argument and
+// reusing the element's own validator (so built-in constraints count too -- per element they run
+// their normal validator). Proven only by checkConstraint (the IR injects per-element validation)
+// or transfer from a value whose element type carries the same constraints.
+
+/**
+ * Constraints declared on this type's first type argument, as [ConstraintKey]s. Unlike
+ * [runtimeConstraintKey], built-in constraints are *included* -- per element they are enforced by
+ * their ordinary validator, not statically.
+ */
+internal fun ConeKotlinType.elementTypeConstraintKeys(session: FirSession): Set<ConstraintKey> =
+    typeArguments.firstOrNull()?.type?.customAnnotations.orEmpty()
+        .mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
+
+private fun FirAnnotation.elementTypeConstraintKey(session: FirSession): ConstraintKey? {
+    val classId = toAnnotationClassId(session) ?: return null
+    if (!isConstraintAnnotation(session)) return null
+    val arguments = comparableArguments() ?: return null
+    return ConstraintKey(classId, arguments)
+}
+
+/**
+ * Reports an error unless every element-type constraint in [required] is satisfied by [rhs]:
+ * a `checkConstraint(...)` (per-element validators injected) or a transfer from a value whose
+ * element type carries the same constraints. Returns true if an error was reported.
+ */
+internal fun verifyElementTypeConstraints(
+    required: Set<ConstraintKey>,
+    rhs: FirExpression,
+    context: CheckerContext,
+    reporter: DiagnosticReporter,
+): Boolean {
+    if (required.isEmpty() || isCheckConstraints(rhs)) return false
+    val missing = required - knownElementTypeConstraints(rhs, context.session)
+    if (missing.isEmpty()) return false
+    val names = missing.joinToString(", ") { it.render() }
+    reporter.reportOn(
+        rhs.source,
+        ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+        "Cannot prove every element satisfies $names: a collection's element-type constraints are " +
+            "checked at runtime. Wrap it in checkConstraint(value), or assign from a value whose " +
+            "element type carries the same constraints.",
+        context,
+    )
+    return true
+}
+
+private fun knownElementTypeConstraints(expr: FirExpression?, session: FirSession): Set<ConstraintKey> = when (expr) {
+    is FirPropertyAccessExpression ->
+        expr.calleeReference.toResolvedVariableSymbol()?.resolvedReturnType?.elementTypeConstraintKeys(session) ?: emptySet()
+
+    is FirDesugaredAssignmentValueReferenceExpression ->
+        knownElementTypeConstraints(expr.expressionRef.value, session)
 
     else -> emptySet()
 }

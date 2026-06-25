@@ -26,8 +26,10 @@ import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.UnsafeDuringIrConstructionAPI
 import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.types.typeOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
 import org.jetbrains.kotlin.ir.util.functions
@@ -81,17 +83,28 @@ private class ConstraintTransformer(
         val result = super.visitVariable(declaration) as IrVariable
         val initializer = result.initializer
         if (initializer != null) {
-            result.initializer = ifCheckConstraintReplaceWithValidation(initializer, result.annotations)
+            result.initializer = ifCheckConstraintReplaceWithValidation(
+                initializer, result.annotations, elementTypeAnnotationsOf(result.type),
+            )
         }
         return result
     }
 
     override fun visitSetValue(expression: IrSetValue): IrExpression {
         val result = super.visitSetValue(expression) as IrSetValue
-        val annotations = (result.symbol.owner as? IrVariable)?.annotations.orEmpty()
-        result.value = ifCheckConstraintReplaceWithValidation(result.value, annotations)
+        val variable = result.symbol.owner as? IrVariable
+        result.value = ifCheckConstraintReplaceWithValidation(
+            result.value, variable?.annotations.orEmpty(), elementTypeAnnotationsOf(variable?.type),
+        )
         return result
     }
+
+    /**
+     * Constraint annotations on a type's first type argument -- the `@IntRange(0, 10)` in
+     * `List<@IntRange(0, 10) Int>`. Each is applied per element via `validateEachElement`.
+     */
+    private fun elementTypeAnnotationsOf(type: IrType?): List<IrConstructorCall> =
+        (type as? IrSimpleType)?.arguments?.firstOrNull()?.typeOrNull?.annotations.orEmpty()
 
     /**
      * Replaces a `checkConstraint(value)` or `checkConstraintOrDefault(value, default)` call with a
@@ -101,7 +114,11 @@ private class ConstraintTransformer(
      * try/catch so a [com.constraints.ConstraintException] from any validator yields `default`
      * instead. The value is evaluated exactly once; an unconstrained value is returned bare.
      */
-    private fun ifCheckConstraintReplaceWithValidation(expr: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
+    private fun ifCheckConstraintReplaceWithValidation(
+        expr: IrExpression,
+        annotations: List<IrConstructorCall>,
+        elementTypeAnnotations: List<IrConstructorCall>,
+    ): IrExpression {
         if (expr !is IrCall) return expr
         val isPlain = expr.symbol == checkConstraintFunction
         val isOrDefault = checkConstraintOrDefaultFunction != null && expr.symbol == checkConstraintOrDefaultFunction
@@ -109,8 +126,15 @@ private class ConstraintTransformer(
 
         val value = expr.arguments[0] ?: return expr
         val constraintApplications = annotations.flatMap { it.getAllConstraints() }
-        val elementApplications = if (validateEachElementFunction != null)
-            annotations.flatMap { it.getElementConstraints() } else emptyList()
+        // Element-level validation comes from both a value-level @ElementConstraint and from
+        // constraint annotations on the element type argument (`List<@IntRange(0,10) Int>`); both
+        // run per element via validateEachElement.
+        val elementApplications = if (validateEachElementFunction != null) {
+            annotations.flatMap { it.getElementConstraints() } +
+                elementTypeAnnotations.flatMap { it.getAllConstraints() }
+        } else {
+            emptyList()
+        }
         // Unconstrained value: neither hatch can fail, so return the value as-is (default unused).
         if (constraintApplications.isEmpty() && elementApplications.isEmpty()) return value
 
