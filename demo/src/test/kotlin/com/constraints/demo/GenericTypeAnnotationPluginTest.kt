@@ -49,9 +49,29 @@ class GenericTypeAnnotationPluginTest {
         assertEquals(listOf(1, 2), b)
     }
 
+    // --- Builder of provably-in-range literals: no checkConstraint needed ---
+
+    @Test
+    fun `listOf of in-range literals compiles without checkConstraint`() {
+        val xs: List<@IntRange(0, 10) Int> = listOf(1, 5, 9)   // every element provably in [0, 10]
+        assertEquals(3, xs.size)
+    }
+
+    @Test
+    fun `empty builder compiles`() {
+        val xs: List<@IntRange(0, 10) Int> = listOf()
+        assertEquals(0, xs.size)
+    }
+
+    @Test
+    fun `setOf of in-range literals compiles`() {
+        val xs: Set<@IntRange(0, 10) Int> = setOf(2, 4, 6)
+        assertEquals(3, xs.size)
+    }
+
     // -----------------------------------------------------------------------
     // These do NOT compile:
-    //   val x: List<@IntRange(0, 10) Int> = listOf(1, 2, 3)   // no checkConstraint: elements unproven
+    //   val x: List<@IntRange(0, 10) Int> = listOf(1, 20, 3)  // 20 not in [0,10]: needs checkConstraint
     //   val y: List<@IntRange(0, 10) Int> = someList          // unknown elements: needs checkConstraint
     // -----------------------------------------------------------------------
 }

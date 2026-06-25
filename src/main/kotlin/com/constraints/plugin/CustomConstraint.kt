@@ -8,10 +8,15 @@ import org.jetbrains.kotlin.fir.declarations.toAnnotationClassId
 import org.jetbrains.kotlin.fir.expressions.FirAnnotation
 import org.jetbrains.kotlin.fir.expressions.FirDesugaredAssignmentValueReferenceExpression
 import org.jetbrains.kotlin.fir.expressions.FirExpression
+import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
 import org.jetbrains.kotlin.fir.expressions.FirGetClassCall
 import org.jetbrains.kotlin.fir.expressions.FirLiteralExpression
 import org.jetbrains.kotlin.fir.expressions.FirPropertyAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier
+import org.jetbrains.kotlin.fir.expressions.FirSpreadArgumentExpression
+import org.jetbrains.kotlin.fir.expressions.FirVarargArgumentsExpression
+import org.jetbrains.kotlin.fir.expressions.arguments
+import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
@@ -211,14 +216,13 @@ private fun knownElementConstraints(expr: FirExpression?, session: FirSession): 
 // their normal validator). Proven only by checkConstraint (the IR injects per-element validation)
 // or transfer from a value whose element type carries the same constraints.
 
-/**
- * Constraints declared on this type's first type argument, as [ConstraintKey]s. Unlike
- * [runtimeConstraintKey], built-in constraints are *included* -- per element they are enforced by
- * their ordinary validator, not statically.
- */
+/** The constraint annotations on this type's first type argument (`@IntRange(0,10)` in `List<@IntRange(0,10) Int>`). */
+internal fun ConeKotlinType.elementTypeAnnotations(session: FirSession): List<FirAnnotation> =
+    typeArguments.firstOrNull()?.type?.customAnnotations.orEmpty().filter { it.isConstraintAnnotation(session) }
+
+/** Those constraints as [ConstraintKey]s -- built-ins included (per element they run their ordinary validator). */
 internal fun ConeKotlinType.elementTypeConstraintKeys(session: FirSession): Set<ConstraintKey> =
-    typeArguments.firstOrNull()?.type?.customAnnotations.orEmpty()
-        .mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
+    elementTypeAnnotations(session).mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
 
 private fun FirAnnotation.elementTypeConstraintKey(session: FirSession): ConstraintKey? {
     val classId = toAnnotationClassId(session) ?: return null
@@ -228,26 +232,35 @@ private fun FirAnnotation.elementTypeConstraintKey(session: FirSession): Constra
 }
 
 /**
- * Reports an error unless every element-type constraint in [required] is satisfied by [rhs]:
- * a `checkConstraint(...)` (per-element validators injected) or a transfer from a value whose
- * element type carries the same constraints. Returns true if an error was reported.
+ * Reports an error unless every element-type constraint is satisfied by [rhs]: a `checkConstraint`
+ * (per-element validators injected at runtime); a transfer from a value whose element type carries
+ * the same constraints; or a builder call (`listOf`/`setOf`/…) whose every element provably
+ * satisfies every constraint at compile time. Returns true if an error was reported.
  */
 internal fun verifyElementTypeConstraints(
-    required: Set<ConstraintKey>,
+    elementAnnotations: List<FirAnnotation>,
     rhs: FirExpression,
     context: CheckerContext,
     reporter: DiagnosticReporter,
 ): Boolean {
-    if (required.isEmpty() || isCheckConstraints(rhs)) return false
-    val missing = required - knownElementTypeConstraints(rhs, context.session)
-    if (missing.isEmpty()) return false
-    val names = missing.joinToString(", ") { it.render() }
+    if (elementAnnotations.isEmpty() || isCheckConstraints(rhs)) return false
+    val session = context.session
+    val required = elementAnnotations.mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
+    if (required.isEmpty()) return false
+
+    // Transfer: rhs reads a value whose element type carries all the same constraints.
+    if ((required - knownElementTypeConstraints(rhs, session)).isEmpty()) return false
+
+    // Builder literal: every element of listOf/setOf(...) provably satisfies every constraint.
+    if (allElementsProvablySatisfy(rhs, elementAnnotations, session)) return false
+
+    val names = required.joinToString(", ") { it.render() }
     reporter.reportOn(
         rhs.source,
         ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-        "Cannot prove every element satisfies $names: a collection's element-type constraints are " +
-            "checked at runtime. Wrap it in checkConstraint(value), or assign from a value whose " +
-            "element type carries the same constraints.",
+        "Cannot prove every element satisfies $names: wrap it in checkConstraint(value), assign from a " +
+            "value whose element type carries the same constraints, or use a builder (listOf/setOf) whose " +
+            "elements each provably satisfy it.",
         context,
     )
     return true
@@ -261,4 +274,49 @@ private fun knownElementTypeConstraints(expr: FirExpression?, session: FirSessio
         knownElementTypeConstraints(expr.expressionRef.value, session)
 
     else -> emptySet()
+}
+
+// --- Builder-literal element proof (listOf / setOf / … with known elements) ---
+
+private val ELEMENT_BUILDERS = setOf(
+    "kotlin.collections.listOf", "kotlin.collections.mutableListOf", "kotlin.collections.arrayListOf",
+    "kotlin.collections.setOf", "kotlin.collections.mutableSetOf",
+    "kotlin.collections.hashSetOf", "kotlin.collections.linkedSetOf", "kotlin.collections.sortedSetOf",
+)
+private val EMPTY_BUILDERS = setOf("kotlin.collections.emptyList", "kotlin.collections.emptySet")
+
+/** True if [rhs] is a list/set builder whose every element provably satisfies every one of [annotations]. */
+private fun allElementsProvablySatisfy(rhs: FirExpression, annotations: List<FirAnnotation>, session: FirSession): Boolean {
+    val elements = builderElements(rhs) ?: return false
+    return elements.all { element -> annotations.all { provablySatisfies(element, it, session) } }
+}
+
+/** The element expressions of a known list/set builder call, or null if it isn't one (or uses a spread). */
+private fun builderElements(rhs: FirExpression?): List<FirExpression>? {
+    val call = rhs as? FirFunctionCall ?: return null
+    val id = call.calleeReference.toResolvedNamedFunctionSymbol()?.callableId ?: return null
+    val fqName = "${id.packageName.asString()}.${id.callableName.asString()}"
+    if (fqName in EMPTY_BUILDERS) return emptyList()
+    if (fqName !in ELEMENT_BUILDERS) return null
+    if (call.arguments.isEmpty()) return emptyList() // listOf() with no args
+    // The elements arrive wrapped in a single FirVarargArgumentsExpression.
+    val vararg = call.arguments.singleOrNull() as? FirVarargArgumentsExpression ?: return null
+    if (vararg.arguments.any { it is FirSpreadArgumentExpression }) return null // can't enumerate *spread
+    return vararg.arguments
+}
+
+/**
+ * Whether [element] provably satisfies [annotation], reusing the scalar checkers' own inference --
+ * so `@IntRange(0,10)` on the element type is proven exactly like `@IntRange(0,10)` on a scalar.
+ * Returns false for an opaque custom constraint (not statically checkable per element).
+ */
+private fun provablySatisfies(element: FirExpression, annotation: FirAnnotation, session: FirSession): Boolean {
+    annotation.rangeTarget(session)?.let { return inferInterval(element, session, it.domain).subsetOf(it.interval) }
+    annotation.doubleRangeTarget(session)?.let { return inferDoubleInterval(element, session).subsetOf(it.interval) }
+    annotation.divisibilityArgs(session)?.let { d ->
+        return d.divisor != 0L && inferRemainder(element, d.divisor, session) == d.remainder.mod(d.divisor)
+    }
+    annotation.stringLengthTarget(session)?.let { return inferStringLength(element, session).subsetOf(it.interval) }
+    annotation.collectionSizeTarget(session)?.let { return inferCollectionSize(element, session).subsetOf(it.interval) }
+    return false
 }

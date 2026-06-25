@@ -37,7 +37,7 @@ internal fun FirCallableSymbol<*>.returnTypeDivisibleBy(session: FirSession): Di
  * The divisor/remainder this annotation constrains a value to: read off `@DivisibleBy`/`@LongDivisibleBy`
  * directly, or -- for an alias such as `@Even` -- off such a meta-annotation on the annotation's declaration.
  */
-private fun FirAnnotation.divisibilityArgs(session: FirSession): Divisibility? {
+internal fun FirAnnotation.divisibilityArgs(session: FirSession): Divisibility? {
     divisibilityFor(toAnnotationClassId(session), this)?.let { return it }
     val classId = toAnnotationClassId(session) ?: return null
     val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
