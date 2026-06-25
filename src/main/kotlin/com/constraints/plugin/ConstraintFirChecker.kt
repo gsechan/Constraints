@@ -97,6 +97,7 @@ object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Commo
         function.symbol.returnTypeDoubleRange(context.session)?.let { verifyDoubleRange(result, it, context, reporter) }
         function.symbol.returnTypeStringLength(context.session)?.let { verifyStringLength(result, it, context, reporter) }
         function.symbol.returnTypeCollectionSize(context.session)?.let { verifyCollectionSize(result, it, context, reporter) }
+        function.symbol.returnTypeStringMatches(context.session).takeIf { it.isNotEmpty() }?.let { verifyStringMatches(result, it, context, reporter) }
         function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(result, it, context, reporter) }
     }
 }
@@ -161,9 +162,11 @@ private fun verifyConstraints(
     val doubleRange = symbol.doubleRangeTarget(context.session)
     val stringLength = symbol.stringLengthTarget(context.session)
     val collectionSize = symbol.collectionSizeTarget(context.session)
+    val stringMatches = symbol.stringMatchTargets(context.session)
     val divisibility = symbol.divisibleBy(context.session)
-    if (required.isEmpty() && requiredElement.isEmpty() && elementTypeAnnotations.isEmpty() && range == null &&
-        doubleRange == null && stringLength == null && collectionSize == null && divisibility == null) return
+    if (required.isEmpty() && requiredElement.isEmpty() && requiredElementType.isEmpty() &&
+        elementTypeAnnotations.isEmpty() && range == null && doubleRange == null &&
+        stringLength == null && collectionSize == null && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isCheckConstraints(rhs)) return
@@ -177,6 +180,7 @@ private fun verifyConstraints(
     if (doubleRange != null) verifyDoubleRange(rhs, doubleRange, context, reporter)
     if (stringLength != null) verifyStringLength(rhs, stringLength, context, reporter)
     if (collectionSize != null) verifyCollectionSize(rhs, collectionSize, context, reporter)
+    if (stringMatches.isNotEmpty()) verifyStringMatches(rhs, stringMatches, context, reporter)
     if (divisibility != null) verifyDivisibility(rhs, divisibility, context, reporter)
 }
 
