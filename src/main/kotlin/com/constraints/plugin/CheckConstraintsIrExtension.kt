@@ -44,6 +44,7 @@ private val ELEMENT_CONSTRAINT_FQ = FqName("com.constraints.ElementConstraint")
 private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 private val CHECK_CONSTRAINT_OR_DEFAULT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraintOrDefault"))
 private val VALIDATE_EACH_ELEMENT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("validateEachElement"))
+private val VALIDATE_EACH_AT_DEPTH_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("validateEachAtDepth"))
 private val CONSTRAINT_EXCEPTION_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ConstraintException"))
 
 /**

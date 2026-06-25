@@ -216,14 +216,6 @@ private fun knownElementConstraints(expr: FirExpression?, session: FirSession): 
 // their normal validator). Proven only by checkConstraint (the IR injects per-element validation)
 // or transfer from a value whose element type carries the same constraints.
 
-/** The constraint annotations on this type's first type argument (`@IntRange(0,10)` in `List<@IntRange(0,10) Int>`). */
-internal fun ConeKotlinType.elementTypeAnnotations(session: FirSession): List<FirAnnotation> =
-    typeArguments.firstOrNull()?.type?.customAnnotations.orEmpty().filter { it.isConstraintAnnotation(session) }
-
-/** Those constraints as [ConstraintKey]s -- built-ins included (per element they run their ordinary validator). */
-internal fun ConeKotlinType.elementTypeConstraintKeys(session: FirSession): Set<ConstraintKey> =
-    elementTypeAnnotations(session).mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
-
 private fun FirAnnotation.elementTypeConstraintKey(session: FirSession): ConstraintKey? {
     val classId = toAnnotationClassId(session) ?: return null
     if (!isConstraintAnnotation(session)) return null
@@ -231,43 +223,68 @@ private fun FirAnnotation.elementTypeConstraintKey(session: FirSession): Constra
     return ConstraintKey(classId, arguments)
 }
 
+/** Whether this type carries any element-type constraint, at any nesting level. */
+internal fun ConeKotlinType.hasElementConstraints(session: FirSession): Boolean {
+    val elem = typeArguments.firstOrNull()?.type ?: return false
+    return elem.customAnnotations.any { it.isConstraintAnnotation(session) } || elem.hasElementConstraints(session)
+}
+
+/** Every element-type constraint key at every nesting level (for diagnostics). */
+private fun ConeKotlinType.allElementKeys(session: FirSession): Set<ConstraintKey> {
+    val elem = typeArguments.firstOrNull()?.type ?: return emptySet()
+    return elem.customAnnotations.mapNotNull { it.elementTypeConstraintKey(session) }.toSet() + elem.allElementKeys(session)
+}
+
 /**
- * Reports an error unless every element-type constraint is satisfied by [rhs]: a `checkConstraint`
- * (per-element validators injected at runtime); a transfer from a value whose element type carries
- * the same constraints; or a builder call (`listOf`/`setOf`/…) whose every element provably
- * satisfies every constraint at compile time. Returns true if an error was reported.
+ * Reports an error unless every element-type constraint of [collectionType] -- at every nesting
+ * level -- is satisfied by [rhs]: a `checkConstraint` (per-element validators injected); a transfer
+ * from a value whose nested element constraints imply these; or a builder (`listOf`/`setOf`/…)
+ * whose every element provably satisfies them, recursing through nested builders. Returns true if
+ * an error was reported.
  */
 internal fun verifyElementTypeConstraints(
-    elementAnnotations: List<FirAnnotation>,
+    collectionType: ConeKotlinType,
     rhs: FirExpression,
     context: CheckerContext,
     reporter: DiagnosticReporter,
 ): Boolean {
-    if (elementAnnotations.isEmpty() || isCheckConstraints(rhs)) return false
     val session = context.session
-    val required = elementAnnotations.mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
-    if (required.isEmpty()) return false
+    if (!collectionType.hasElementConstraints(session) || isCheckConstraints(rhs)) return false
 
-    // Transfer: rhs reads a value whose element type carries all the same constraints.
-    if ((required - knownElementTypeConstraints(rhs, session)).isEmpty()) return false
+    // Transfer: rhs reads a value whose (nested) element constraints imply these.
+    knownCollectionType(rhs, session)?.let { if (collectionType.elementConstraintsImpliedBy(it, session)) return false }
 
-    // Builder literal (listOf/setOf/…): classify each element. A provably-violating element is a
-    // hard error; an undecidable one defers the whole collection to checkConstraint.
-    builderElements(rhs)?.let { return verifyBuilderElements(it, elementAnnotations, rhs, context, reporter) }
+    // Builder literal: recurse through the (possibly nested) builders.
+    builderElements(rhs)?.let {
+        return when (verifyElements(it, collectionType, context, reporter)) {
+            ElementVerdict.PROVEN -> false
+            ElementVerdict.VIOLATED -> true
+            ElementVerdict.UNKNOWN -> {
+                reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(collectionType, session), context)
+                true
+            }
+        }
+    }
 
     // Not a builder, not a transfer -> defer to runtime.
-    reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(required), context)
+    reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(collectionType, session), context)
     return true
 }
 
-private fun knownElementTypeConstraints(expr: FirExpression?, session: FirSession): Set<ConstraintKey> = when (expr) {
-    is FirPropertyAccessExpression ->
-        expr.calleeReference.toResolvedVariableSymbol()?.resolvedReturnType?.elementTypeConstraintKeys(session) ?: emptySet()
+/** lhs's element constraints at every nesting level are implied by [other]'s (a sound transfer). */
+private fun ConeKotlinType.elementConstraintsImpliedBy(other: ConeKotlinType, session: FirSession): Boolean {
+    val lhsElem = typeArguments.firstOrNull()?.type ?: return true
+    val rhsElem = other.typeArguments.firstOrNull()?.type ?: return false
+    val lhsKeys = lhsElem.customAnnotations.mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
+    val rhsKeys = rhsElem.customAnnotations.mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
+    if (!rhsKeys.containsAll(lhsKeys)) return false
+    return lhsElem.elementConstraintsImpliedBy(rhsElem, session)
+}
 
-    is FirDesugaredAssignmentValueReferenceExpression ->
-        knownElementTypeConstraints(expr.expressionRef.value, session)
-
-    else -> emptySet()
+private fun knownCollectionType(expr: FirExpression?, session: FirSession): ConeKotlinType? = when (expr) {
+    is FirPropertyAccessExpression -> expr.calleeReference.toResolvedVariableSymbol()?.resolvedReturnType
+    is FirDesugaredAssignmentValueReferenceExpression -> knownCollectionType(expr.expressionRef.value, session)
+    else -> null
 }
 
 // --- Builder-literal element proof (listOf / setOf / … with known elements) ---
@@ -296,47 +313,56 @@ private fun builderElements(rhs: FirExpression?): List<FirExpression>? {
 private enum class ElementVerdict { PROVEN, VIOLATED, UNKNOWN }
 
 /**
- * Classifies each of a builder's [elements] against the [annotations]. A provably-violating element
- * is a hard "can never be valid" error; if any element is merely undecidable the whole collection is
- * deferred to checkConstraint. Returns true if any error was reported (false = every element proven).
+ * Recursively classifies a builder's [elements] against [collectionType]'s element type: each element
+ * against the element type's *direct* constraints (via [verdict]), and -- when the element type is
+ * itself a constrained collection -- the element's own nested builder. Reports violations at the
+ * offending element; returns the aggregate verdict over the whole subtree.
  */
-private fun verifyBuilderElements(
+private fun verifyElements(
     elements: List<FirExpression>,
-    annotations: List<FirAnnotation>,
-    rhs: FirExpression,
+    collectionType: ConeKotlinType,
     context: CheckerContext,
     reporter: DiagnosticReporter,
-): Boolean {
+): ElementVerdict {
     val session = context.session
-    var reportedViolation = false
-    var anyUnknown = false
+    val elementType = collectionType.typeArguments.firstOrNull()?.type ?: return ElementVerdict.PROVEN
+    val directAnns = elementType.customAnnotations.filter { it.isConstraintAnnotation(session) }
+    val nested = elementType.hasElementConstraints(session)
+    var agg = ElementVerdict.PROVEN
     for (element in elements) {
-        for (annotation in annotations) {
-            when (verdict(element, annotation, session)) {
+        for (ann in directAnns) {
+            when (verdict(element, ann, session)) {
                 ElementVerdict.PROVEN -> {}
-                ElementVerdict.UNKNOWN -> anyUnknown = true
+                ElementVerdict.UNKNOWN -> agg = worse(agg, ElementVerdict.UNKNOWN)
                 ElementVerdict.VIOLATED -> {
-                    val label = annotation.elementTypeConstraintKey(session)?.render() ?: "the element constraint"
+                    val label = ann.elementTypeConstraintKey(session)?.render() ?: "the element constraint"
                     reporter.reportOn(
                         element.source,
                         ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
                         "This element does not satisfy $label: it can never be valid.",
                         context,
                     )
-                    reportedViolation = true
+                    agg = ElementVerdict.VIOLATED
                 }
             }
         }
+        if (nested) {
+            val inner = builderElements(element)
+            agg = worse(agg, if (inner != null) verifyElements(inner, elementType, context, reporter) else ElementVerdict.UNKNOWN)
+        }
     }
-    if (reportedViolation) return true
-    if (!anyUnknown) return false // every element proven -> compiles, no runtime check
-    val required = annotations.mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
-    reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(required), context)
-    return true
+    return agg
 }
 
-private fun needsCheckConstraintMessage(required: Set<ConstraintKey>): String {
-    val names = required.joinToString(", ") { it.render() }
+/** Combines two verdicts: VIOLATED dominates UNKNOWN dominates PROVEN. */
+private fun worse(a: ElementVerdict, b: ElementVerdict): ElementVerdict = when {
+    a == ElementVerdict.VIOLATED || b == ElementVerdict.VIOLATED -> ElementVerdict.VIOLATED
+    a == ElementVerdict.UNKNOWN || b == ElementVerdict.UNKNOWN -> ElementVerdict.UNKNOWN
+    else -> ElementVerdict.PROVEN
+}
+
+private fun needsCheckConstraintMessage(collectionType: ConeKotlinType, session: FirSession): String {
+    val names = collectionType.allElementKeys(session).joinToString(", ") { it.render() }
     return "Cannot prove every element satisfies $names: wrap it in checkConstraint(value), assign from a " +
         "value whose element type carries the same constraints, or use a builder (listOf/setOf) whose " +
         "elements each provably satisfy it."

@@ -92,7 +92,7 @@ object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Commo
         // Runtime-only constraints on the return type; if unsatisfied, stop (as in verifyConstraints).
         if (verifyRuntimeConstraints(function.symbol.returnTypeConstraintKeys(context.session), result, context, reporter)) return
         if (verifyElementConstraints(function.symbol.returnTypeElementConstraintKeys(context.session), result, context, reporter)) return
-        if (verifyElementTypeConstraints(function.symbol.resolvedReturnType.elementTypeAnnotations(context.session), result, context, reporter)) return
+        if (verifyElementTypeConstraints(function.symbol.resolvedReturnType, result, context, reporter)) return
         function.symbol.returnTypeRange(context.session)?.let { verifyRange(result, it, context, reporter) }
         function.symbol.returnTypeDoubleRange(context.session)?.let { verifyDoubleRange(result, it, context, reporter) }
         function.symbol.returnTypeStringLength(context.session)?.let { verifyStringLength(result, it, context, reporter) }
@@ -157,16 +157,16 @@ private fun verifyConstraints(
 ) {
     val required = symbol.runtimeConstraintKeys(context.session)
     val requiredElement = symbol.elementConstraintKeys(context.session)
-    val elementTypeAnnotations = symbol.resolvedReturnType.elementTypeAnnotations(context.session)
+    val hasElementTypeConstraints = symbol.resolvedReturnType.hasElementConstraints(context.session)
     val range = symbol.rangeTarget(context.session)
     val doubleRange = symbol.doubleRangeTarget(context.session)
     val stringLength = symbol.stringLengthTarget(context.session)
     val collectionSize = symbol.collectionSizeTarget(context.session)
     val stringMatches = symbol.stringMatchTargets(context.session)
     val divisibility = symbol.divisibleBy(context.session)
-    if (required.isEmpty() && requiredElement.isEmpty() && requiredElementType.isEmpty() &&
-        elementTypeAnnotations.isEmpty() && range == null && doubleRange == null &&
-        stringLength == null && collectionSize == null && divisibility == null) return
+    if (required.isEmpty() && requiredElement.isEmpty() && !hasElementTypeConstraints &&
+        range == null && doubleRange == null && stringLength == null && collectionSize == null &&
+        stringMatches.isEmpty() && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isCheckConstraints(rhs)) return
@@ -174,7 +174,7 @@ private fun verifyConstraints(
     // Runtime-only constraints (value-level, element-level, and element-type) first.
     if (verifyRuntimeConstraints(required, rhs, context, reporter)) return
     if (verifyElementConstraints(requiredElement, rhs, context, reporter)) return
-    if (verifyElementTypeConstraints(elementTypeAnnotations, rhs, context, reporter)) return
+    if (hasElementTypeConstraints && verifyElementTypeConstraints(symbol.resolvedReturnType, rhs, context, reporter)) return
 
     if (range != null) verifyRange(rhs, range, context, reporter)
     if (doubleRange != null) verifyDoubleRange(rhs, doubleRange, context, reporter)
