@@ -1,6 +1,7 @@
 package com.constraints.demo
 
 import com.constraints.ConstraintException
+import com.constraints.DivisibleBy
 import com.constraints.IntRange
 import com.constraints.checkConstraint
 import org.junit.jupiter.api.Test
@@ -9,6 +10,12 @@ import kotlin.test.assertFailsWith
 
 /** A function whose return range [2, 5] fits inside the element constraints exercised below. */
 private fun smallPositive(): @IntRange(2, 5) Int = 3
+
+/** Return range [3, 4] -- used to show `foo() + 1` (-> [4, 5]) is inferred for an element. */
+private fun threeOrFour(): @IntRange(3, 4) Int = 3
+
+/** Constrained-return divisibility, to show element inference reads a function's @DivisibleBy. */
+private fun even(): @DivisibleBy(2, 0) Int = 4
 
 /**
  * Constraints on a collection's element *type argument* -- `List<@IntRange(0, 10) Int>` -- mean
@@ -83,6 +90,20 @@ class GenericTypeAnnotationPluginTest {
     fun `mixed literals and a constrained call, all provably in range`() {
         val xs: List<@IntRange(0, 10) Int> = listOf(1, smallPositive(), 9)
         assertEquals(3, xs.size)
+    }
+
+    @Test
+    fun `arithmetic on a constrained call element is inferred`() {
+        // threeOrFour() is @IntRange(3, 4); + 1 gives [4, 5], a subset of [1, 10].
+        val xs: List<@IntRange(1, 10) Int> = listOf(threeOrFour() + 1)
+        assertEquals(1, xs.size)
+    }
+
+    @Test
+    fun `divisibility of a constrained call element is inferred`() {
+        // even() is @DivisibleBy(2, 0); +2 stays even, so both elements satisfy @DivisibleBy(2, 0).
+        val xs: List<@DivisibleBy(2, 0) Int> = listOf(even(), even() + 2)
+        assertEquals(2, xs.size)
     }
 
     // -----------------------------------------------------------------------
