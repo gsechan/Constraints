@@ -310,7 +310,7 @@ private fun builderElements(rhs: FirExpression?): List<FirExpression>? {
     return vararg.arguments
 }
 
-private enum class ElementVerdict { PROVEN, VIOLATED, UNKNOWN }
+internal enum class ElementVerdict { PROVEN, VIOLATED, UNKNOWN }
 
 /**
  * Recursively classifies a builder's [elements] against [collectionType]'s element type: each element
@@ -414,5 +414,6 @@ private fun verdict(element: FirExpression, annotation: FirAnnotation, session: 
             else -> ElementVerdict.VIOLATED
         }
     }
+    annotation.stringMatch(session)?.let { return stringMatchElementVerdict(element, it, session) }
     return ElementVerdict.UNKNOWN // opaque custom constraint: can't decide per element
 }

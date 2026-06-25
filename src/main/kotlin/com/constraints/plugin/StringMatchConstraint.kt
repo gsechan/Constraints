@@ -59,7 +59,7 @@ internal fun FirVariableSymbol<*>.stringMatchTargets(session: FirSession): List<
 internal fun FirCallableSymbol<*>.returnTypeStringMatches(session: FirSession): List<StringMatch> =
     resolvedReturnType.customAnnotations.mapNotNull { it.stringMatch(session) }
 
-private fun FirAnnotation.stringMatch(session: FirSession): StringMatch? {
+internal fun FirAnnotation.stringMatch(session: FirSession): StringMatch? {
     stringMatchFor(toAnnotationClassId(session), this)?.let { return it }
     val classId = toAnnotationClassId(session) ?: return null
     val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
@@ -133,6 +133,26 @@ internal fun verifyStringMatches(
             )
         }
     }
+}
+
+/**
+ * Per-element verdict of [element] against a string-matching [target], for an element-type constraint
+ * like `List<@Prefix("foo") String>`. Reuses the same proofs as [verifyStringMatches]: a literal is
+ * evaluated directly (PROVEN / VIOLATED, or UNKNOWN for an invalid @Matches regex), prefix-/suffix-
+ * preserving concatenation and same-constraint transfers are PROVEN, and anything else is UNKNOWN.
+ */
+internal fun stringMatchElementVerdict(element: FirExpression, target: StringMatch, session: FirSession): ElementVerdict {
+    if (target.kind == StringMatchKind.PREFIX && provablyStartsWith(element, target.pattern, session)) return ElementVerdict.PROVEN
+    if (target.kind == StringMatchKind.SUFFIX && provablyEndsWith(element, target.pattern, session)) return ElementVerdict.PROVEN
+    stringLiteralValue(element)?.let {
+        return when (target.satisfiedBy(it)) {
+            true -> ElementVerdict.PROVEN
+            false -> ElementVerdict.VIOLATED
+            null -> ElementVerdict.UNKNOWN
+        }
+    }
+    if (target in knownStringMatches(element, session)) return ElementVerdict.PROVEN
+    return ElementVerdict.UNKNOWN
 }
 
 /**
