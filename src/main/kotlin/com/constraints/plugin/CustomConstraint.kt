@@ -304,10 +304,11 @@ private fun builderElements(rhs: FirExpression?): List<FirExpression>? {
     if (fqName in EMPTY_BUILDERS) return emptyList()
     if (fqName !in ELEMENT_BUILDERS) return null
     if (call.arguments.isEmpty()) return emptyList() // listOf() with no args
-    // The elements arrive wrapped in a single FirVarargArgumentsExpression.
-    val vararg = call.arguments.singleOrNull() as? FirVarargArgumentsExpression ?: return null
-    if (vararg.arguments.any { it is FirSpreadArgumentExpression }) return null // can't enumerate *spread
-    return vararg.arguments
+    // Multiple vararg elements arrive wrapped in a single FirVarargArgumentsExpression, but a single
+    // element comes through unwrapped (as the bare argument expression) -- handle both.
+    val elements = (call.arguments.singleOrNull() as? FirVarargArgumentsExpression)?.arguments ?: call.arguments
+    if (elements.any { it is FirSpreadArgumentExpression }) return null // can't enumerate *spread
+    return elements
 }
 
 internal enum class ElementVerdict { PROVEN, VIOLATED, UNKNOWN }
