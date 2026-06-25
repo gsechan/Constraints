@@ -8,8 +8,12 @@ import org.jetbrains.kotlin.fir.declarations.toAnnotationClassId
 import org.jetbrains.kotlin.fir.expressions.FirAnnotation
 import org.jetbrains.kotlin.fir.expressions.FirDesugaredAssignmentValueReferenceExpression
 import org.jetbrains.kotlin.fir.expressions.FirExpression
+import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
 import org.jetbrains.kotlin.fir.expressions.FirLiteralExpression
 import org.jetbrains.kotlin.fir.expressions.FirPropertyAccessExpression
+import org.jetbrains.kotlin.fir.expressions.FirStringConcatenationCall
+import org.jetbrains.kotlin.fir.expressions.arguments
+import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
@@ -87,36 +91,71 @@ internal fun verifyStringMatches(
     val known = if (literal == null) knownStringMatches(rhs, context.session) else emptySet()
 
     for (target in targets) {
-        when {
-            literal != null -> when (target.satisfiedBy(literal)) {
-                true -> {} // statically proven -> no runtime check needed
-                false -> reporter.reportOn(
-                    rhs.source,
-                    ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-                    "Value \"$literal\" does not satisfy ${target.label}: it can never be valid.",
-                    context,
-                )
-                null -> reporter.reportOn(
-                    rhs.source,
-                    ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-                    "Cannot evaluate ${target.label}: \"${target.pattern}\" is not a valid regular expression. " +
-                        "Wrap the value in checkConstraint(value) to check at runtime.",
-                    context,
-                )
-            }
+        // @Prefix is closed under appending: a value that provably starts with the prefix still does
+        // after `+ anything`, so `someFooPrefixed + " tail"` stays valid. This also subsumes @Prefix's
+        // plain literal and transfer cases.
+        if (target.kind == StringMatchKind.PREFIX && provablyStartsWith(rhs, target.pattern, context.session)) {
+            continue
+        }
 
-            target in known -> {} // proven by transfer from a value with the identical constraint
+        val proven: Boolean? = when {
+            literal != null -> target.satisfiedBy(literal) // Boolean? -- null only for an invalid @Matches regex
+            target in known -> true                         // transfer from an identically-constrained value
+            else -> false
+        }
+        when (proven) {
+            true -> {} // statically proven -> no runtime check needed
 
-            else -> reporter.reportOn(
+            null -> reporter.reportOn(
                 rhs.source,
                 ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-                "Cannot prove this satisfies ${target.label}: only string literals and values already " +
-                    "known to satisfy the same constraint are checked statically. Wrap it in " +
-                    "checkConstraint(value) to check at runtime.",
+                "Cannot evaluate ${target.label}: \"${target.pattern}\" is not a valid regular expression. " +
+                    "Wrap the value in checkConstraint(value) to check at runtime.",
+                context,
+            )
+
+            false -> if (literal != null) reporter.reportOn(
+                rhs.source,
+                ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+                "Value \"$literal\" does not satisfy ${target.label}: it can never be valid.",
+                context,
+            ) else reporter.reportOn(
+                rhs.source,
+                ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+                "Cannot prove this satisfies ${target.label}: only string literals, `<prefixed> + …` for " +
+                    "@Prefix, and values already known to satisfy the same constraint are checked statically. " +
+                    "Wrap it in checkConstraint(value) to check at runtime.",
                 context,
             )
         }
     }
+}
+
+/**
+ * True if [expr] provably starts with [prefix]: a string literal that does; a `+` concatenation
+ * (or string template) whose left/first operand provably does -- since appending on the right can't
+ * change the start; or a variable whose declared `@Prefix` is at least as specific (its pattern
+ * starts with [prefix]). Anything else is not provable here.
+ */
+private fun provablyStartsWith(expr: FirExpression?, prefix: String, session: FirSession): Boolean = when (expr) {
+    is FirLiteralExpression -> (expr.value as? String)?.startsWith(prefix) ?: false
+
+    // String template "$a b" -- the first piece determines the start.
+    is FirStringConcatenationCall -> provablyStartsWith(expr.arguments.firstOrNull(), prefix, session)
+
+    is FirFunctionCall ->
+        // `a + b` desugars to `a.plus(b)`; the receiver (a) determines the start.
+        if (expr.calleeReference.toResolvedNamedFunctionSymbol()?.name?.asString() == "plus")
+            provablyStartsWith(expr.dispatchReceiver ?: expr.explicitReceiver, prefix, session)
+        else false
+
+    is FirPropertyAccessExpression ->
+        expr.calleeReference.toResolvedVariableSymbol()?.stringMatchTargets(session).orEmpty()
+            .any { it.kind == StringMatchKind.PREFIX && it.pattern.startsWith(prefix) }
+
+    is FirDesugaredAssignmentValueReferenceExpression -> provablyStartsWith(expr.expressionRef.value, prefix, session)
+
+    else -> false
 }
 
 /** The compile-time String value of [expr] if it is a string literal, else null. */

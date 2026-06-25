@@ -51,6 +51,29 @@ class StringMatchingPluginTest {
         assertEquals("foobar", b)
     }
 
+    // --- @Prefix is closed under appending ---
+
+    @Test
+    fun `appending to a prefixed value preserves the prefix`() {
+        @Prefix("foo") val a = "foome"
+        @Prefix("foo") val b = a + " and me"   // a starts with "foo", so a + anything does too
+        assertEquals("foome and me", b)
+    }
+
+    @Test
+    fun `literal prefix concatenated with a dynamic tail compiles`() {
+        val tail = "anything"
+        @Prefix("foo") val b = "foo" + tail    // left literal "foo" carries the prefix
+        assertEquals("fooanything", b)
+    }
+
+    @Test
+    fun `chained appends keep the prefix`() {
+        @Prefix("foo") val a = "foo!"
+        @Prefix("foo") val b = a + "x" + "y"   // ((a + "x") + "y"); leftmost is a
+        assertEquals("foo!xy", b)
+    }
+
     // --- Dynamic values via checkConstraint ---
 
     @Test
