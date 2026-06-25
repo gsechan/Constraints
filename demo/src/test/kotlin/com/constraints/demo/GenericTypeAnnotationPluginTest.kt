@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
+/** A function whose return range [2, 5] fits inside the element constraints exercised below. */
+private fun smallPositive(): @IntRange(2, 5) Int = 3
+
 /**
  * Constraints on a collection's element *type argument* -- `List<@IntRange(0, 10) Int>` -- mean
  * "every element satisfies it". The plugin injects per-element validation when assigned via
@@ -66,6 +69,19 @@ class GenericTypeAnnotationPluginTest {
     @Test
     fun `setOf of in-range literals compiles`() {
         val xs: Set<@IntRange(0, 10) Int> = setOf(2, 4, 6)
+        assertEquals(3, xs.size)
+    }
+
+    @Test
+    fun `element from a function with a fitting return range is proven`() {
+        // smallPositive() returns @IntRange(2, 5), which is a subset of [0, 10].
+        val xs: List<@IntRange(0, 10) Int> = listOf(smallPositive())
+        assertEquals(3, xs[0])
+    }
+
+    @Test
+    fun `mixed literals and a constrained call, all provably in range`() {
+        val xs: List<@IntRange(0, 10) Int> = listOf(1, smallPositive(), 9)
         assertEquals(3, xs.size)
     }
 
