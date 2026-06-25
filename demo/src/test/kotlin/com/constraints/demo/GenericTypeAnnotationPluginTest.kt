@@ -71,7 +71,8 @@ class GenericTypeAnnotationPluginTest {
 
     // -----------------------------------------------------------------------
     // These do NOT compile:
-    //   val x: List<@IntRange(0, 10) Int> = listOf(1, 20, 3)  // 20 not in [0,10]: needs checkConstraint
-    //   val y: List<@IntRange(0, 10) Int> = someList          // unknown elements: needs checkConstraint
+    //   val x: List<@IntRange(0, 10) Int> = listOf(1, 20, 3)   // 20 provably out of [0,10]: HARD error
+    //   val y: List<@IntRange(0, 10) Int> = listOf(1, dynamic) // a dynamic element: needs checkConstraint
+    //   val z: List<@IntRange(0, 10) Int> = someList           // unknown collection: needs checkConstraint
     // -----------------------------------------------------------------------
 }

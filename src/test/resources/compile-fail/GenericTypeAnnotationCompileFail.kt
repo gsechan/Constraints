@@ -3,8 +3,8 @@ package compile.fail
 import com.constraints.IntRange
 
 fun test() {
-    // Builder with an out-of-range element -> not provable, needs checkConstraint.
-    val xs: List<@IntRange(0, 10) Int> = listOf(1, 20, 3)  // ERROR: Cannot prove every element satisfies @IntRange
+    // Builder with a provably out-of-range element -> hard error on that element.
+    val xs: List<@IntRange(0, 10) Int> = listOf(1, 20, 3)  // ERROR: can never be valid
 
     // Dynamic source, not a known transfer -> needs checkConstraint.
     val source = listOf(1, 2, 3).filter { it > 0 }

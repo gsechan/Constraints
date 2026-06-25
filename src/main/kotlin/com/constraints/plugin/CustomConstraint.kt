@@ -251,18 +251,12 @@ internal fun verifyElementTypeConstraints(
     // Transfer: rhs reads a value whose element type carries all the same constraints.
     if ((required - knownElementTypeConstraints(rhs, session)).isEmpty()) return false
 
-    // Builder literal: every element of listOf/setOf(...) provably satisfies every constraint.
-    if (allElementsProvablySatisfy(rhs, elementAnnotations, session)) return false
+    // Builder literal (listOf/setOf/…): classify each element. A provably-violating element is a
+    // hard error; an undecidable one defers the whole collection to checkConstraint.
+    builderElements(rhs)?.let { return verifyBuilderElements(it, elementAnnotations, rhs, context, reporter) }
 
-    val names = required.joinToString(", ") { it.render() }
-    reporter.reportOn(
-        rhs.source,
-        ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
-        "Cannot prove every element satisfies $names: wrap it in checkConstraint(value), assign from a " +
-            "value whose element type carries the same constraints, or use a builder (listOf/setOf) whose " +
-            "elements each provably satisfy it.",
-        context,
-    )
+    // Not a builder, not a transfer -> defer to runtime.
+    reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(required), context)
     return true
 }
 
@@ -285,12 +279,6 @@ private val ELEMENT_BUILDERS = setOf(
 )
 private val EMPTY_BUILDERS = setOf("kotlin.collections.emptyList", "kotlin.collections.emptySet")
 
-/** True if [rhs] is a list/set builder whose every element provably satisfies every one of [annotations]. */
-private fun allElementsProvablySatisfy(rhs: FirExpression, annotations: List<FirAnnotation>, session: FirSession): Boolean {
-    val elements = builderElements(rhs) ?: return false
-    return elements.all { element -> annotations.all { provablySatisfies(element, it, session) } }
-}
-
 /** The element expressions of a known list/set builder call, or null if it isn't one (or uses a spread). */
 private fun builderElements(rhs: FirExpression?): List<FirExpression>? {
     val call = rhs as? FirFunctionCall ?: return null
@@ -305,18 +293,100 @@ private fun builderElements(rhs: FirExpression?): List<FirExpression>? {
     return vararg.arguments
 }
 
+private enum class ElementVerdict { PROVEN, VIOLATED, UNKNOWN }
+
 /**
- * Whether [element] provably satisfies [annotation], reusing the scalar checkers' own inference --
- * so `@IntRange(0,10)` on the element type is proven exactly like `@IntRange(0,10)` on a scalar.
- * Returns false for an opaque custom constraint (not statically checkable per element).
+ * Classifies each of a builder's [elements] against the [annotations]. A provably-violating element
+ * is a hard "can never be valid" error; if any element is merely undecidable the whole collection is
+ * deferred to checkConstraint. Returns true if any error was reported (false = every element proven).
  */
-private fun provablySatisfies(element: FirExpression, annotation: FirAnnotation, session: FirSession): Boolean {
-    annotation.rangeTarget(session)?.let { return inferInterval(element, session, it.domain).subsetOf(it.interval) }
-    annotation.doubleRangeTarget(session)?.let { return inferDoubleInterval(element, session).subsetOf(it.interval) }
-    annotation.divisibilityArgs(session)?.let { d ->
-        return d.divisor != 0L && inferRemainder(element, d.divisor, session) == d.remainder.mod(d.divisor)
+private fun verifyBuilderElements(
+    elements: List<FirExpression>,
+    annotations: List<FirAnnotation>,
+    rhs: FirExpression,
+    context: CheckerContext,
+    reporter: DiagnosticReporter,
+): Boolean {
+    val session = context.session
+    var reportedViolation = false
+    var anyUnknown = false
+    for (element in elements) {
+        for (annotation in annotations) {
+            when (verdict(element, annotation, session)) {
+                ElementVerdict.PROVEN -> {}
+                ElementVerdict.UNKNOWN -> anyUnknown = true
+                ElementVerdict.VIOLATED -> {
+                    val label = annotation.elementTypeConstraintKey(session)?.render() ?: "the element constraint"
+                    reporter.reportOn(
+                        element.source,
+                        ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+                        "This element does not satisfy $label: it can never be valid.",
+                        context,
+                    )
+                    reportedViolation = true
+                }
+            }
+        }
     }
-    annotation.stringLengthTarget(session)?.let { return inferStringLength(element, session).subsetOf(it.interval) }
-    annotation.collectionSizeTarget(session)?.let { return inferCollectionSize(element, session).subsetOf(it.interval) }
-    return false
+    if (reportedViolation) return true
+    if (!anyUnknown) return false // every element proven -> compiles, no runtime check
+    val required = annotations.mapNotNull { it.elementTypeConstraintKey(session) }.toSet()
+    reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(required), context)
+    return true
+}
+
+private fun needsCheckConstraintMessage(required: Set<ConstraintKey>): String {
+    val names = required.joinToString(", ") { it.render() }
+    return "Cannot prove every element satisfies $names: wrap it in checkConstraint(value), assign from a " +
+        "value whose element type carries the same constraints, or use a builder (listOf/setOf) whose " +
+        "elements each provably satisfy it."
+}
+
+/**
+ * Three-valued verdict of [element] against [annotation], reusing the scalar checkers' own inference:
+ * PROVEN (statically satisfies), VIOLATED (can never satisfy -- e.g. a range disjoint from the value),
+ * or UNKNOWN (undecidable, or an opaque custom constraint).
+ */
+private fun verdict(element: FirExpression, annotation: FirAnnotation, session: FirSession): ElementVerdict {
+    annotation.rangeTarget(session)?.let {
+        val inferred = inferInterval(element, session, it.domain)
+        return when {
+            inferred.subsetOf(it.interval) -> ElementVerdict.PROVEN
+            inferred.overlaps(it.interval) -> ElementVerdict.UNKNOWN
+            else -> ElementVerdict.VIOLATED
+        }
+    }
+    annotation.doubleRangeTarget(session)?.let {
+        val inferred = inferDoubleInterval(element, session)
+        return when {
+            inferred.subsetOf(it.interval) -> ElementVerdict.PROVEN
+            inferred.isUnknown || inferred.overlaps(it.interval) -> ElementVerdict.UNKNOWN
+            else -> ElementVerdict.VIOLATED
+        }
+    }
+    annotation.divisibilityArgs(session)?.let { d ->
+        if (d.divisor == 0L) return ElementVerdict.UNKNOWN
+        return when (inferRemainder(element, d.divisor, session)) {
+            d.remainder.mod(d.divisor) -> ElementVerdict.PROVEN
+            null -> ElementVerdict.UNKNOWN
+            else -> ElementVerdict.VIOLATED
+        }
+    }
+    annotation.stringLengthTarget(session)?.let {
+        val inferred = inferStringLength(element, session)
+        return when {
+            inferred.subsetOf(it.interval) -> ElementVerdict.PROVEN
+            inferred.isUnknown || inferred.overlaps(it.interval) -> ElementVerdict.UNKNOWN
+            else -> ElementVerdict.VIOLATED
+        }
+    }
+    annotation.collectionSizeTarget(session)?.let {
+        val inferred = inferCollectionSize(element, session)
+        return when {
+            inferred.subsetOf(it.interval) -> ElementVerdict.PROVEN
+            inferred.isUnknown || inferred.overlaps(it.interval) -> ElementVerdict.UNKNOWN
+            else -> ElementVerdict.VIOLATED
+        }
+    }
+    return ElementVerdict.UNKNOWN // opaque custom constraint: can't decide per element
 }
