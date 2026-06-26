@@ -2,7 +2,7 @@ package com.constraints.demo
 
 import com.constraints.DivisibleBy
 import com.constraints.IntRange
-import com.constraints.StringLength
+import com.constraints.Size
 import com.constraints.checkConstraintOrDefault
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -43,9 +43,9 @@ class CheckConstraintOrDefaultPluginTest {
 
     @Test
     fun `works with a string length constraint`() {
-        @StringLength(1, 3) val ok = checkConstraintOrDefault("hi", "x")
+        @Size(1, 3) val ok = checkConstraintOrDefault("hi", "x")
         assertEquals("hi", ok)
-        @StringLength(1, 3) val tooLong = checkConstraintOrDefault("hello", "x") // length 5 -> fallback
+        @Size(1, 3) val tooLong = checkConstraintOrDefault("hello", "x") // length 5 -> fallback
         assertEquals("x", tooLong)
     }
 }

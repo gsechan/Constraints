@@ -1,6 +1,6 @@
 package com.constraints.demo
 
-import com.constraints.CollectionSize
+import com.constraints.Size
 import com.constraints.ConstraintException
 import com.constraints.ElementConstraint
 import com.constraints.Validator
@@ -37,7 +37,7 @@ object PositiveElementValidator : Validator<Int, AllPositive> {
 }
 
 // An annotation that combines both a collection-level and an element-level constraint.
-@CollectionSize(1, Int.MAX_VALUE)
+@Size(1, Int.MAX_VALUE)
 @ElementConstraint(NonNegativeElementValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
@@ -126,7 +126,7 @@ class ElementConstraintPluginTest {
 
     @Test
     fun `combined collection-level and element-level constraints both checked`() {
-        // CollectionSize(1, MAX) checked first (collection-level), then each element (element-level).
+        // Size(1, MAX) checked first (collection-level), then each element (element-level).
         @NonEmptyAllNonNegative val list = checkConstraint(listOf(0, 1, 2))
         assertEquals(3, list.size)
     }

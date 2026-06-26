@@ -35,7 +35,7 @@ fun validateEachElement(target: Any, annotation: Annotation, validator: Validato
  * Applies [validator] to every value [depth] levels of nesting deep in [collection], descending
  * through nested collections. `depth == 1` validates [collection]'s direct elements; `depth == 2`
  * validates the elements of each (collection) element, and so on. Used for an element-type
- * constraint on a nested generic, e.g. the `@IntRange` in `List<@CollectionSize(..) List<@IntRange(..) Int>>`
+ * constraint on a nested generic, e.g. the `@IntRange` in `List<@Size(..) List<@IntRange(..) Int>>`
  * is applied at depth 2. Throws [ConstraintException] on the first failure (throw-on-first).
  */
 @Suppress("UNCHECKED_CAST")

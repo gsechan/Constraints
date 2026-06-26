@@ -38,8 +38,8 @@ import org.jetbrains.kotlin.name.ClassId
 // This file holds only the compiler-interaction skeleton: the registrar, the position-based
 // checkers (property / assignment / return), the constraint-definition checker, and the
 // verifyConstraints dispatcher. The per-constraint reading + verification logic lives in the
-// sibling *Constraint.kt files (RangeConstraint, DoubleRangeConstraint, StringLengthConstraint,
-// CollectionSizeConstraint, ArraySizeConstraint, DivisibilityConstraint, CustomConstraint); shared ids/helpers are in
+// sibling *Constraint.kt files (RangeConstraint, DoubleRangeConstraint, SizeConstraint,
+// DivisibilityConstraint, CustomConstraint); shared ids/helpers are in
 // ConstraintCommon.kt.
 // ===========================================================================
 
@@ -95,9 +95,7 @@ object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Commo
         if (verifyElementTypeConstraints(function.symbol.resolvedReturnType, result, context, reporter)) return
         function.symbol.returnTypeRange(context.session)?.let { verifyRange(result, it, context, reporter) }
         function.symbol.returnTypeDoubleRange(context.session)?.let { verifyDoubleRange(result, it, context, reporter) }
-        function.symbol.returnTypeStringLength(context.session)?.let { verifyStringLength(result, it, context, reporter) }
-        function.symbol.returnTypeCollectionSize(context.session)?.let { verifyCollectionSize(result, it, context, reporter) }
-        function.symbol.returnTypeArraySize(context.session)?.let { verifyArraySize(result, it, context, reporter) }
+        function.symbol.returnTypeSize(context.session)?.let { verifySize(result, it, context, reporter) }
         function.symbol.returnTypeStringMatches(context.session).takeIf { it.isNotEmpty() }?.let { verifyStringMatches(result, it, context, reporter) }
         function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(result, it, context, reporter) }
     }
@@ -147,7 +145,7 @@ private fun FirAnnotation.validatorClassId(): ClassId? {
  *  - `@ElementConstraint`: likewise, by transfer ([verifyElementConstraints]).
  *  - `@IntRange` / `@LongRange` / `@ShortRange` / `@ByteRange`: interval inference ([verifyRange]).
  *  - `@FloatRange` / `@DoubleRange`: double-interval inference ([verifyDoubleRange]).
- *  - `@StringLength` / `@CollectionSize` / `@ArraySize`: length inference ([verifyStringLength] / [verifyCollectionSize] / [verifyArraySize]).
+ *  - `@Size` (CharSequence length / Collection-Map / array size): size inference ([verifySize]).
  *  - `@DivisibleBy` / `@LongDivisibleBy` etc.: residue inference ([verifyDivisibility]).
  */
 private fun verifyConstraints(
@@ -161,14 +159,12 @@ private fun verifyConstraints(
     val hasElementTypeConstraints = symbol.resolvedReturnType.hasElementConstraints(context.session)
     val range = symbol.rangeTarget(context.session)
     val doubleRange = symbol.doubleRangeTarget(context.session)
-    val stringLength = symbol.stringLengthTarget(context.session)
-    val collectionSize = symbol.collectionSizeTarget(context.session)
-    val arraySize = symbol.arraySizeTarget(context.session)
+    val size = symbol.sizeTarget(context.session)
     val stringMatches = symbol.stringMatchTargets(context.session)
     val divisibility = symbol.divisibleBy(context.session)
     if (required.isEmpty() && requiredElement.isEmpty() && !hasElementTypeConstraints &&
-        range == null && doubleRange == null && stringLength == null && collectionSize == null &&
-        arraySize == null && stringMatches.isEmpty() && divisibility == null) return
+        range == null && doubleRange == null && size == null &&
+        stringMatches.isEmpty() && divisibility == null) return
 
     // The escape hatch satisfies every constraint -- the IR backend injects the checks.
     if (isCheckConstraints(rhs)) return
@@ -180,9 +176,7 @@ private fun verifyConstraints(
 
     if (range != null) verifyRange(rhs, range, context, reporter)
     if (doubleRange != null) verifyDoubleRange(rhs, doubleRange, context, reporter)
-    if (stringLength != null) verifyStringLength(rhs, stringLength, context, reporter)
-    if (collectionSize != null) verifyCollectionSize(rhs, collectionSize, context, reporter)
-    if (arraySize != null) verifyArraySize(rhs, arraySize, context, reporter)
+    if (size != null) verifySize(rhs, size, context, reporter)
     if (stringMatches.isNotEmpty()) verifyStringMatches(rhs, stringMatches, context, reporter)
     if (divisibility != null) verifyDivisibility(rhs, divisibility, context, reporter)
 }

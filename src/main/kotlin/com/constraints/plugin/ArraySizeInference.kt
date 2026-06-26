@@ -20,7 +20,7 @@ import org.jetbrains.kotlin.name.Name
 
 // ===========================================================================
 // Array-size inference -- maps an array expression to the [Interval] of sizes it
-// can have, for proving `@ArraySize`. Mirrors CollectionSizeInference but for
+// can have, for proving `@Size`. Mirrors CollectionSizeInference but for
 // Array<T> and the primitive array aliases. Reuses [NumericDomain.INT] since
 // array sizes fit in a non-negative Int.
 //
@@ -29,8 +29,8 @@ import org.jetbrains.kotlin.name.Name
 //   - arrayOfNulls(n) with a statically-known size n: that size (or range).
 //   - `array + element` (single, non-array/collection): result = receiver.size + 1 (exact).
 //   - `array + otherArray` / `array + collection` (known size): sum of sizes.
-//   - Variable reads: use the declared @ArraySize bounds.
-//   - Callee return type annotated with @ArraySize: trust those bounds.
+//   - Variable reads: use the declared @Size bounds.
+//   - Callee return type annotated with @Size: trust those bounds.
 // ===========================================================================
 
 // Vararg array factories whose size equals the number of non-spread arguments.
@@ -47,8 +47,8 @@ private val VARARG_ARRAY_FACTORIES = setOf(
 )
 
 // Array<T> plus the eight primitive array aliases -- used to tell `array + element`
-// from `array + otherArray`.
-private val ARRAY_CLASS_IDS = setOf(
+// from `array + otherArray`, and by inferSize to route to array inference.
+internal val ARRAY_CLASS_IDS = setOf(
     ClassId(FqName("kotlin"), Name.identifier("Array")),
     ClassId(FqName("kotlin"), Name.identifier("IntArray")),
     ClassId(FqName("kotlin"), Name.identifier("DoubleArray")),
@@ -68,7 +68,7 @@ internal fun inferArraySize(expr: FirExpression?, session: FirSession): Interval
     is FirFunctionCall -> inferArraySizeCall(expr, session)
 
     is FirPropertyAccessExpression ->
-        expr.calleeReference.toResolvedVariableSymbol()?.arraySizeTarget(session)?.interval ?: Interval.UNKNOWN
+        expr.calleeReference.toResolvedVariableSymbol()?.sizeTarget(session)?.interval ?: Interval.UNKNOWN
 
     is FirDesugaredAssignmentValueReferenceExpression ->
         inferArraySize(expr.expressionRef.value, session)
@@ -128,7 +128,7 @@ private fun inferArraySizeCall(call: FirFunctionCall, session: FirSession): Inte
         return Interval.UNKNOWN
     }
 
-    return callee.returnTypeArraySize(session)?.interval ?: Interval.UNKNOWN
+    return callee.returnTypeSize(session)?.interval ?: Interval.UNKNOWN
 }
 
 /** True if this expression's resolved type is `Array<T>` or a primitive array alias. */

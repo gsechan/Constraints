@@ -112,7 +112,7 @@ private class ConstraintTransformer(
     /**
      * Constraint annotations on each nesting level of a collection type, paired with their depth: the
      * `@IntRange(0, 10)` in `List<@IntRange(0, 10) Int>` is depth 1, while in
-     * `List<@CollectionSize(..) List<@IntRange(2, 5) Int>>` the `@CollectionSize` is depth 1 and the
+     * `List<@Size(..) List<@IntRange(2, 5) Int>>` the `@Size` is depth 1 and the
      * `@IntRange` depth 2. Each is applied to every value that many levels deep via `validateEachAtDepth`.
      */
     private fun nestedElementConstraints(type: IrType?, depth: Int = 1): List<Pair<Int, IrConstructorCall>> {
