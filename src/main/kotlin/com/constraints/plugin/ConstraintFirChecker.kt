@@ -14,6 +14,7 @@ import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirFunctionCallChec
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirReturnExpressionChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirVariableAssignmentChecker
 import org.jetbrains.kotlin.fir.analysis.extensions.FirAdditionalCheckersExtension
+import org.jetbrains.kotlin.fir.declarations.FirAnonymousFunction
 import org.jetbrains.kotlin.fir.declarations.FirFunction
 import org.jetbrains.kotlin.fir.declarations.FirProperty
 import org.jetbrains.kotlin.fir.declarations.FirRegularClass
@@ -93,11 +94,21 @@ object ConstraintAssignmentChecker : FirVariableAssignmentChecker(MppCheckerKind
     }
 }
 
-/** Return:  every `return <expr>` from a function with a constrained return type must honor it. */
+/**
+ * Return:  every `return <expr>` from a *named* function with a constrained return type must honor it.
+ *
+ * Lambdas are intentionally excluded. A lambda's resolved return type can carry an element-type
+ * constraint by substitution (the `Array<@IntRange Int>` init lambda is `(Int) -> @IntRange Int`), but
+ * this context-free checker can't see whether the lambda's result is covered by an enclosing
+ * `checkConstraint` (as in `checkConstraint(Array(5) { dynamic })`), so it would wrongly reject a
+ * deferred value. Constrained lambda returns are handled with that context by [ConstraintLambdaArgumentChecker]
+ * (for `() -> @C T` parameters) and by the `Array(size) { init }` path in verifyElementTypeConstraints.
+ */
 object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Common) {
     context(context: CheckerContext, reporter: DiagnosticReporter)
     override fun check(expression: FirReturnExpression) {
         val function = expression.target.labeledElement as? FirFunction ?: return
+        if (function is FirAnonymousFunction) return // lambdas are handled at the call/assignment site
         val result = expression.result
         // Runtime-only constraints on the return type; if unsatisfied, stop (as in verifyConstraints).
         if (verifyRuntimeConstraints(function.symbol.returnTypeConstraintKeys(context.session), result, context, reporter)) return
