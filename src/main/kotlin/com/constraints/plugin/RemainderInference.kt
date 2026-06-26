@@ -54,8 +54,16 @@ private fun inferRemainderCall(call: FirFunctionCall, divisor: Long, session: Fi
         "plus" -> remainderOp(receiver, arg, divisor) { a, b -> Math.addExact(a, b) }
         "minus" -> remainderOp(receiver, arg, divisor) { a, b -> Math.subtractExact(a, b) }
         "times" -> remainderOp(receiver, arg, divisor) { a, b -> Math.multiplyExact(a, b) }
-        // div and rem do not preserve congruence; any other call is opaque.
-        else -> null
+        // div and rem do not preserve congruence. For any other call, trust a @DivisibleBy on its
+        // return type: if `divisor` divides the return type's divisor, the residue carries over.
+        else -> {
+            val known = callee.returnTypeDivisibleBy(session)
+            if (known != null && known.divisor != 0L && known.divisor % divisor == 0L) {
+                known.remainder.mod(divisor)
+            } else {
+                null
+            }
+        }
     }
 }
 

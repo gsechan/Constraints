@@ -10,6 +10,7 @@ import org.jetbrains.kotlin.ir.builders.irBlock
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
@@ -26,8 +27,10 @@ import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.UnsafeDuringIrConstructionAPI
 import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.types.typeOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
 import org.jetbrains.kotlin.ir.util.functions
@@ -42,6 +45,7 @@ private val ELEMENT_CONSTRAINT_FQ = FqName("com.constraints.ElementConstraint")
 private val CHECK_CONSTRAINT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraint"))
 private val CHECK_CONSTRAINT_OR_DEFAULT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("checkConstraintOrDefault"))
 private val VALIDATE_EACH_ELEMENT_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("validateEachElement"))
+private val VALIDATE_EACH_AT_DEPTH_CALLABLE = CallableId(FqName("com.constraints"), Name.identifier("validateEachAtDepth"))
 private val CONSTRAINT_EXCEPTION_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ConstraintException"))
 
 /**
@@ -57,8 +61,15 @@ class CheckIntRangeBoundsIrGenerationExtension : IrGenerationExtension {
         val checkConstraintFunction = pluginContext.referenceFunctions(CHECK_CONSTRAINT_CALLABLE).single()
         val checkConstraintOrDefaultFunction = pluginContext.referenceFunctions(CHECK_CONSTRAINT_OR_DEFAULT_CALLABLE).singleOrNull()
         val validateEachElementFunction = pluginContext.referenceFunctions(VALIDATE_EACH_ELEMENT_CALLABLE).singleOrNull()
+        val validateEachAtDepthFunction = pluginContext.referenceFunctions(VALIDATE_EACH_AT_DEPTH_CALLABLE).singleOrNull()
         moduleFragment.transform(
-            ConstraintTransformer(pluginContext, checkConstraintFunction, checkConstraintOrDefaultFunction, validateEachElementFunction),
+            ConstraintTransformer(
+                pluginContext,
+                checkConstraintFunction,
+                checkConstraintOrDefaultFunction,
+                validateEachElementFunction,
+                validateEachAtDepthFunction,
+            ),
             null,
         )
     }
@@ -70,6 +81,7 @@ private class ConstraintTransformer(
     private val checkConstraintFunction: IrSimpleFunctionSymbol,
     private val checkConstraintOrDefaultFunction: IrSimpleFunctionSymbol?,
     private val validateEachElementFunction: IrSimpleFunctionSymbol?,
+    private val validateEachAtDepthFunction: IrSimpleFunctionSymbol?,
 ) : IrElementTransformerVoidWithContext() {
 
     /** Type of `com.constraints.ConstraintException`, the exception checkConstraintOrDefault catches. */
@@ -81,16 +93,31 @@ private class ConstraintTransformer(
         val result = super.visitVariable(declaration) as IrVariable
         val initializer = result.initializer
         if (initializer != null) {
-            result.initializer = ifCheckConstraintReplaceWithValidation(initializer, result.annotations)
+            result.initializer = ifCheckConstraintReplaceWithValidation(
+                initializer, result.annotations, nestedElementConstraints(result.type),
+            )
         }
         return result
     }
 
     override fun visitSetValue(expression: IrSetValue): IrExpression {
         val result = super.visitSetValue(expression) as IrSetValue
-        val annotations = (result.symbol.owner as? IrVariable)?.annotations.orEmpty()
-        result.value = ifCheckConstraintReplaceWithValidation(result.value, annotations)
+        val variable = result.symbol.owner as? IrVariable
+        result.value = ifCheckConstraintReplaceWithValidation(
+            result.value, variable?.annotations.orEmpty(), nestedElementConstraints(variable?.type),
+        )
         return result
+    }
+
+    /**
+     * Constraint annotations on each nesting level of a collection type, paired with their depth: the
+     * `@IntRange(0, 10)` in `List<@IntRange(0, 10) Int>` is depth 1, while in
+     * `List<@CollectionSize(..) List<@IntRange(2, 5) Int>>` the `@CollectionSize` is depth 1 and the
+     * `@IntRange` depth 2. Each is applied to every value that many levels deep via `validateEachAtDepth`.
+     */
+    private fun nestedElementConstraints(type: IrType?, depth: Int = 1): List<Pair<Int, IrConstructorCall>> {
+        val element = (type as? IrSimpleType)?.arguments?.firstOrNull()?.typeOrNull ?: return emptyList()
+        return element.annotations.map { depth to it } + nestedElementConstraints(element, depth + 1)
     }
 
     /**
@@ -101,7 +128,11 @@ private class ConstraintTransformer(
      * try/catch so a [com.constraints.ConstraintException] from any validator yields `default`
      * instead. The value is evaluated exactly once; an unconstrained value is returned bare.
      */
-    private fun ifCheckConstraintReplaceWithValidation(expr: IrExpression, annotations: List<IrConstructorCall>): IrExpression {
+    private fun ifCheckConstraintReplaceWithValidation(
+        expr: IrExpression,
+        annotations: List<IrConstructorCall>,
+        nestedTypeAnnotations: List<Pair<Int, IrConstructorCall>>,
+    ): IrExpression {
         if (expr !is IrCall) return expr
         val isPlain = expr.symbol == checkConstraintFunction
         val isOrDefault = checkConstraintOrDefaultFunction != null && expr.symbol == checkConstraintOrDefaultFunction
@@ -109,10 +140,21 @@ private class ConstraintTransformer(
 
         val value = expr.arguments[0] ?: return expr
         val constraintApplications = annotations.flatMap { it.getAllConstraints() }
-        val elementApplications = if (validateEachElementFunction != null)
-            annotations.flatMap { it.getElementConstraints() } else emptyList()
+        // Value-level @ElementConstraint: validates the collection's direct elements.
+        val elementApplications = if (validateEachElementFunction != null) {
+            annotations.flatMap { it.getElementConstraints() }
+        } else {
+            emptyList()
+        }
+        // Element-type constraints (`List<@IntRange(0,10) Int>`, nested too): each runs against every
+        // value at its nesting depth via validateEachAtDepth.
+        val nestedTypeApplications = if (validateEachAtDepthFunction != null) {
+            nestedTypeAnnotations.flatMap { (depth, ann) -> ann.getAllConstraints().map { depth to it } }
+        } else {
+            emptyList()
+        }
         // Unconstrained value: neither hatch can fail, so return the value as-is (default unused).
-        if (constraintApplications.isEmpty() && elementApplications.isEmpty()) return value
+        if (constraintApplications.isEmpty() && elementApplications.isEmpty() && nestedTypeApplications.isEmpty()) return value
 
         val scope = currentScope!!.scope.scopeOwnerSymbol
         val builder = DeclarationIrBuilder(pluginContext, scope, expr.startOffset, expr.endOffset)
@@ -132,6 +174,15 @@ private class ConstraintTransformer(
                     arguments[0] = irGet(tmp)                                     // collection
                     arguments[1] = application.annotation.deepCopyWithSymbols()   // annotation instance
                     arguments[2] = irGetObject(application.validator.objectClass)  // validator
+                }
+            }
+            // Element-type validators: validateEachAtDepth(collection, depth, validator, annotation)
+            for ((depth, application) in nestedTypeApplications) {
+                +irCall(validateEachAtDepthFunction!!).apply {
+                    arguments[0] = irGet(tmp)                                     // collection
+                    arguments[1] = irInt(depth)                                   // nesting depth
+                    arguments[2] = irGetObject(application.validator.objectClass)  // validator
+                    arguments[3] = application.annotation.deepCopyWithSymbols()   // annotation instance
                 }
             }
             +irGet(tmp)

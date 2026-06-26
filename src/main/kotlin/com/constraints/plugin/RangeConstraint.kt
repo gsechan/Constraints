@@ -39,7 +39,7 @@ internal fun FirCallableSymbol<*>.returnTypeRange(session: FirSession): RangeTar
  * The range constraint this annotation carries: `@IntRange`/`@LongRange` directly, or -- for an
  * alias such as `@PositiveInt` -- a range meta-annotation on the annotation's own declaration.
  */
-private fun FirAnnotation.rangeTarget(session: FirSession): RangeTarget? {
+internal fun FirAnnotation.rangeTarget(session: FirSession): RangeTarget? {
     rangeTargetFor(toAnnotationClassId(session), this)?.let { return it }
     val classId = toAnnotationClassId(session) ?: return null
     val classSymbol = session.symbolProvider.getClassLikeSymbolByClassId(classId) as? FirRegularClassSymbol ?: return null
