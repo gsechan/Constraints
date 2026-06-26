@@ -271,6 +271,37 @@ internal fun verifyElementTypeConstraints(
     return true
 }
 
+/**
+ * Verifies a single [value] written into one slot of an element-constrained [containerType] -- e.g.
+ * `array[i] = value`, where the constraint lives on the container's element type. Mirrors how a
+ * builder element is checked (the value IS a single element): a provably-violating value is a hard
+ * error, a provably-valid one compiles with no runtime check, and an undecidable one asks for
+ * `checkConstraint`. A `checkConstraint(value)` is deferred to the IR. Returns true if an error was
+ * reported.
+ */
+internal fun verifyElementWrite(
+    containerType: ConeKotlinType,
+    value: FirExpression,
+    context: CheckerContext,
+    reporter: DiagnosticReporter,
+): Boolean {
+    if (isCheckConstraints(value)) return false
+    return when (verifyElements(listOf(value), containerType, context, reporter)) {
+        ElementVerdict.PROVEN -> false
+        ElementVerdict.VIOLATED -> true // verifyElements already reported the hard error at the value
+        ElementVerdict.UNKNOWN -> {
+            val names = containerType.allElementKeys(context.session).joinToString(", ") { it.render() }
+            reporter.reportOn(
+                value.source,
+                ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+                "Cannot prove this value satisfies $names: wrap it in checkConstraint(value) to validate at runtime.",
+                context,
+            )
+            true
+        }
+    }
+}
+
 /** lhs's element constraints at every nesting level are implied by [other]'s (a sound transfer). */
 private fun ConeKotlinType.elementConstraintsImpliedBy(other: ConeKotlinType, session: FirSession): Boolean {
     val lhsElem = typeArguments.firstOrNull()?.type ?: return true

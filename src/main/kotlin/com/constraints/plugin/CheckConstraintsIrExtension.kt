@@ -30,6 +30,7 @@ import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.types.isArray
 import org.jetbrains.kotlin.ir.types.typeOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
@@ -106,6 +107,28 @@ private class ConstraintTransformer(
         result.value = ifCheckConstraintReplaceWithValidation(
             result.value, variable?.annotations.orEmpty(), nestedElementConstraints(variable?.type),
         )
+        return result
+    }
+
+    /**
+     * Indexed array write: `array[i] = value` is an `Array<T>.set(i, value)` call. When the array's
+     * element type carries constraints, a `checkConstraint(value)` written into it is rewritten to
+     * validate that single value against the element type (the element type's own constraints applied
+     * directly, plus any nested element constraints via validateEachAtDepth). The FIR checker keeps
+     * this scoped to `Array<T>` and only accepts checkConstraint when it can't prove the value.
+     */
+    override fun visitCall(expression: IrCall): IrExpression {
+        val result = super.visitCall(expression) as IrCall
+        if (result.symbol.owner.name.asString() != "set") return result
+        val receiverType = result.arguments.firstOrNull()?.type // dispatch receiver (the array)
+        if (receiverType?.isArray() != true) return result
+        val elementType = (receiverType as? IrSimpleType)?.arguments?.firstOrNull()?.typeOrNull ?: return result
+        val valueIndex = result.arguments.size - 1 // set(receiver, index, value)
+        result.arguments[valueIndex]?.let { value ->
+            result.arguments[valueIndex] = ifCheckConstraintReplaceWithValidation(
+                value, elementType.annotations, nestedElementConstraints(elementType),
+            )
+        }
         return result
     }
 
