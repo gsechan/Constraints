@@ -87,6 +87,43 @@ class ElementConstraintPluginTest {
         assertEquals(listOf(1, 2, 3), b)
     }
 
+    // --- Arrays: @ElementConstraint applies element-by-element to arrays too ---
+
+    @Test
+    fun `element validator passes for all-valid primitive array`() {
+        @AllPositive val arr = checkConstraint(intArrayOf(1, 2, 3))
+        assertEquals(3, arr.size)
+    }
+
+    @Test
+    fun `element validator throws on first invalid primitive-array element`() {
+        assertFailsWith<ConstraintException> {
+            @AllPositive val arr = checkConstraint(intArrayOf(1, -2, 3))
+            println(arr)
+        }
+    }
+
+    @Test
+    fun `element validator passes for all-valid object array`() {
+        @AllPositive val arr = checkConstraint(arrayOf(1, 2, 3))
+        assertEquals(3, arr.size)
+    }
+
+    @Test
+    fun `element validator throws on first invalid object-array element`() {
+        assertFailsWith<ConstraintException> {
+            @AllPositive val arr = checkConstraint(arrayOf(1, 2, -3))
+            println(arr)
+        }
+    }
+
+    @Test
+    fun `transfer between same element-constrained arrays compiles`() {
+        @AllPositive val a = checkConstraint(intArrayOf(1, 2, 3))
+        @AllPositive val b = a   // proven by transfer; no re-check injected
+        assertEquals(3, b.size)
+    }
+
     @Test
     fun `combined collection-level and element-level constraints both checked`() {
         // CollectionSize(1, MAX) checked first (collection-level), then each element (element-level).
