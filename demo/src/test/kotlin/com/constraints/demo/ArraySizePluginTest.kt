@@ -40,6 +40,26 @@ class ArraySizePluginTest {
         assertEquals(4, arr.size)
     }
 
+    // --- Array constructors (size is the first argument) ---
+
+    @Test
+    fun `IntArray constructor with a literal size compiles`() {
+        @ArraySize(6, 6) val arr = IntArray(6)
+        assertEquals(6, arr.size)
+    }
+
+    @Test
+    fun `IntArray constructor size fitting within wider bounds compiles`() {
+        @ArraySize(0, 10) val arr = IntArray(6) { it }   // size 6 ⊆ [0, 10]
+        assertEquals(6, arr.size)
+    }
+
+    @Test
+    fun `Array constructor with a literal size compiles`() {
+        @ArraySize(3, 3) val arr = Array(3) { "x$it" }
+        assertEquals(3, arr.size)
+    }
+
     // --- Primitive array aliases ---
 
     @Test
@@ -159,6 +179,7 @@ class ArraySizePluginTest {
     // -----------------------------------------------------------------------
     // These do NOT compile (see ArraySizeCompileFail.kt):
     //   @ArraySize(5, 5) val x = intArrayOf(1, 2)    // size 2 not in [5, 5]
+    //   @ArraySize(0, 5) val v = IntArray(6)         // constructor size 6 not in [0, 5]
     //   @ArraySize(1, 5) val y = someArray           // size unknown: needs checkConstraint
     //   @NonEmptyArray  val w = emptyArray<Int>()    // size 0 not in [1, MAX_VALUE]
     // -----------------------------------------------------------------------

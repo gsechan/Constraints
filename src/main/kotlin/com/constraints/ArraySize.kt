@@ -12,6 +12,7 @@ package com.constraints
  *
  * Proven at compile time for:
  *  - Known-size factory calls: `arrayOf(a, b, c)` / `intArrayOf(1, 2, 3)` → size 3, `emptyArray()` → 0.
+ *  - Array constructors with a statically-known size: `IntArray(n)` / `Array(n) { … }` → size n.
  *  - `arrayOfNulls(n)` with a literal `n` → size n.
  *  - `array + element` (single element): size = array.size + 1 (exact).
  *  - `array + otherArray` / `array + collection`: sum of sizes when both are known.

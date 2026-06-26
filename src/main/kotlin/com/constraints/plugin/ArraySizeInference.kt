@@ -8,8 +8,10 @@ import org.jetbrains.kotlin.fir.expressions.FirPropertyAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirSpreadArgumentExpression
 import org.jetbrains.kotlin.fir.expressions.FirVarargArgumentsExpression
 import org.jetbrains.kotlin.fir.expressions.arguments
+import org.jetbrains.kotlin.fir.references.toResolvedCallableSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
+import org.jetbrains.kotlin.fir.symbols.impl.FirConstructorSymbol
 import org.jetbrains.kotlin.fir.types.classId
 import org.jetbrains.kotlin.fir.types.resolvedType
 import org.jetbrains.kotlin.name.ClassId
@@ -75,6 +77,14 @@ internal fun inferArraySize(expr: FirExpression?, session: FirSession): Interval
 }
 
 private fun inferArraySizeCall(call: FirFunctionCall, session: FirSession): Interval {
+    // Array constructors -- Array(n) { … }, IntArray(n), IntArray(n) { … }, etc. The first argument
+    // is the size. Constructor calls don't resolve to a *named function* symbol, so handle them
+    // before the factory/operator logic below.
+    if (call.isArrayConstructorCall()) {
+        val sizeArg = inferInterval(call.arguments.firstOrNull(), session, NumericDomain.INT)
+        return if (!sizeArg.isUnknown && sizeArg.min >= 0) sizeArg else Interval.UNKNOWN
+    }
+
     val callee = call.calleeReference.toResolvedNamedFunctionSymbol() ?: return Interval.UNKNOWN
     val calleeName = callee.name.asString()
 
@@ -124,3 +134,11 @@ private fun inferArraySizeCall(call: FirFunctionCall, session: FirSession): Inte
 /** True if this expression's resolved type is `Array<T>` or a primitive array alias. */
 private fun FirExpression.isArrayType(): Boolean =
     resolvedType.classId in ARRAY_CLASS_IDS
+
+/**
+ * True if this call is a constructor of an array type (`Array`/`IntArray`/…). The classId guard
+ * keeps a *function* that merely returns an array (e.g. `buildIntArray(seed)`) out -- only an actual
+ * array constructor has its size as the first argument.
+ */
+private fun FirFunctionCall.isArrayConstructorCall(): Boolean =
+    calleeReference.toResolvedCallableSymbol() is FirConstructorSymbol && resolvedType.classId in ARRAY_CLASS_IDS
