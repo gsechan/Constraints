@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.fir.FirSession
 import org.jetbrains.kotlin.fir.analysis.checkers.context.CheckerContext
 import org.jetbrains.kotlin.fir.declarations.toAnnotationClassId
 import org.jetbrains.kotlin.fir.expressions.FirAnnotation
+import org.jetbrains.kotlin.fir.expressions.FirAnonymousFunctionExpression
 import org.jetbrains.kotlin.fir.expressions.FirDesugaredAssignmentValueReferenceExpression
 import org.jetbrains.kotlin.fir.expressions.FirExpression
 import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
@@ -13,17 +14,22 @@ import org.jetbrains.kotlin.fir.expressions.FirGetClassCall
 import org.jetbrains.kotlin.fir.expressions.FirLiteralExpression
 import org.jetbrains.kotlin.fir.expressions.FirPropertyAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier
+import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.FirSpreadArgumentExpression
 import org.jetbrains.kotlin.fir.expressions.FirVarargArgumentsExpression
 import org.jetbrains.kotlin.fir.expressions.arguments
+import org.jetbrains.kotlin.fir.references.toResolvedCallableSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
 import org.jetbrains.kotlin.fir.symbols.impl.FirCallableSymbol
+import org.jetbrains.kotlin.fir.symbols.impl.FirConstructorSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirRegularClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirVariableSymbol
 import org.jetbrains.kotlin.fir.types.ConeKotlinType
+import org.jetbrains.kotlin.fir.types.classId
 import org.jetbrains.kotlin.fir.types.customAnnotations
+import org.jetbrains.kotlin.fir.types.resolvedType
 import org.jetbrains.kotlin.fir.types.type
 import org.jetbrains.kotlin.name.ClassId
 
@@ -266,6 +272,20 @@ internal fun verifyElementTypeConstraints(
         }
     }
 
+    // Array(size) { init } constructor: the init lambda returns the element type, so its returned
+    // value is checked like a single element. A provable value compiles, a provably-bad one is a
+    // hard error, an undecidable one defers the whole array to checkConstraint(Array(...) { ... }).
+    arrayConstructorInitReturn(rhs)?.let {
+        return when (verifyElements(listOf(it), collectionType, context, reporter)) {
+            ElementVerdict.PROVEN -> false
+            ElementVerdict.VIOLATED -> true
+            ElementVerdict.UNKNOWN -> {
+                reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(collectionType, session), context)
+                true
+            }
+        }
+    }
+
     // Not a builder, not a transfer -> defer to runtime.
     reporter.reportOn(rhs.source, ConstraintErrors.CONSTRAINT_NOT_VALIDATED, needsCheckConstraintMessage(collectionType, session), context)
     return true
@@ -298,6 +318,75 @@ internal fun verifyElementWrite(
                 context,
             )
             true
+        }
+    }
+}
+
+// --- Lambda return values (Array(n) { init } and `() -> @C T` parameters) ---
+
+/**
+ * The returned expression of an `Array(size) { init }` constructor's init lambda, or null if [rhs]
+ * isn't such a call. The init lambda returns the element type, so its returned value is checked like
+ * a single element of the array.
+ */
+private fun arrayConstructorInitReturn(rhs: FirExpression?): FirExpression? {
+    val call = rhs as? FirFunctionCall ?: return null
+    if (call.resolvedType.classId != ARRAY_CLASS_ID) return null
+    if (call.calleeReference.toResolvedCallableSymbol() !is FirConstructorSymbol) return null
+    val lambda = call.arguments.lastOrNull() as? FirAnonymousFunctionExpression ?: return null
+    return lambdaReturnValue(lambda)
+}
+
+/** The value a lambda effectively returns: its body's last statement (an implicit `return`). */
+internal fun lambdaReturnValue(lambda: FirAnonymousFunctionExpression): FirExpression? =
+    when (val last = lambda.anonymousFunction.body?.statements?.lastOrNull()) {
+        is FirReturnExpression -> last.result
+        is FirExpression -> last
+        else -> null
+    }
+
+/**
+ * If this type is a function type (`Function0<R>`, `Function1<P, R>`, …), the constraint annotations
+ * on its return type `R` -- e.g. the `@IntRange` in a `() -> @IntRange(0, 10) Int` parameter. Empty
+ * for a non-function type or an unconstrained return.
+ */
+internal fun ConeKotlinType.lambdaReturnConstraints(session: FirSession): List<FirAnnotation> {
+    val classId = classId ?: return emptyList()
+    if (classId.packageFqName.asString() != "kotlin") return emptyList()
+    if (!classId.shortClassName.asString().startsWith("Function")) return emptyList()
+    val returnType = typeArguments.lastOrNull()?.type ?: return emptyList()
+    return returnType.customAnnotations.filter { it.isConstraintAnnotation(session) }
+}
+
+/**
+ * Verifies a [value] (typically a lambda's returned expression) against the [constraints] declared
+ * on the position it flows into. Provably-satisfying compiles, provably-violating is a hard error,
+ * undecidable asks for a statically-provable value. Reuses the per-element [verdict].
+ */
+internal fun verifyValueAgainstConstraints(
+    value: FirExpression,
+    constraints: List<FirAnnotation>,
+    context: CheckerContext,
+    reporter: DiagnosticReporter,
+) {
+    val session = context.session
+    for (annotation in constraints) {
+        val label = annotation.elementTypeConstraintKey(session)?.render() ?: continue
+        when (verdict(value, annotation, session)) {
+            ElementVerdict.PROVEN -> {}
+            ElementVerdict.VIOLATED -> reporter.reportOn(
+                value.source,
+                ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+                "This lambda returns a value that does not satisfy $label: it can never be valid.",
+                context,
+            )
+            ElementVerdict.UNKNOWN -> reporter.reportOn(
+                value.source,
+                ConstraintErrors.CONSTRAINT_NOT_VALIDATED,
+                "Cannot prove this lambda's return value satisfies $label: return a value the compiler " +
+                    "can prove statically (a dynamic checkConstraint inside the lambda isn't supported here).",
+                context,
+            )
         }
     }
 }
