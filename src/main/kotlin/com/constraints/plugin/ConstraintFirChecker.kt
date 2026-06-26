@@ -19,10 +19,12 @@ import org.jetbrains.kotlin.fir.declarations.FirProperty
 import org.jetbrains.kotlin.fir.declarations.FirRegularClass
 import org.jetbrains.kotlin.fir.declarations.toAnnotationClassId
 import org.jetbrains.kotlin.fir.expressions.FirAnnotation
+import org.jetbrains.kotlin.fir.expressions.FirAnonymousFunctionExpression
 import org.jetbrains.kotlin.fir.expressions.FirDesugaredAssignmentValueReferenceExpression
 import org.jetbrains.kotlin.fir.expressions.FirExpression
 import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
 import org.jetbrains.kotlin.fir.expressions.FirGetClassCall
+import org.jetbrains.kotlin.fir.expressions.FirResolvedArgumentList
 import org.jetbrains.kotlin.fir.expressions.FirQualifiedAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier
 import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
@@ -35,6 +37,7 @@ import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
 import org.jetbrains.kotlin.fir.symbols.impl.FirRegularClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirVariableSymbol
 import org.jetbrains.kotlin.fir.types.classId
+import org.jetbrains.kotlin.fir.types.coneType
 import org.jetbrains.kotlin.fir.types.resolvedType
 import org.jetbrains.kotlin.name.ClassId
 
@@ -68,7 +71,7 @@ class ConstraintCheckersExtension(session: FirSession) : FirAdditionalCheckersEx
         override val variableAssignmentCheckers = setOf(ConstraintAssignmentChecker)
         override val returnExpressionCheckers = setOf(ConstraintReturnChecker)
         override val annotationCheckers = setOf(DivisibleByDivisorChecker)
-        override val functionCallCheckers = setOf(ConstraintArrayWriteChecker)
+        override val functionCallCheckers = setOf(ConstraintArrayWriteChecker, ConstraintLambdaArgumentChecker)
     }
 }
 
@@ -124,6 +127,28 @@ object ConstraintArrayWriteChecker : FirFunctionCallChecker(MppCheckerKind.Commo
         if (!receiverType.hasElementConstraints(context.session)) return
         val value = expression.arguments.lastOrNull() ?: return // set(index, value)
         verifyElementWrite(receiverType, value, context, reporter)
+    }
+}
+
+/**
+ * A lambda argument whose parameter's function type has a constrained *return* type -- e.g.
+ * `fun make(f: () -> @IntRange(0, 10) Int)` called as `make { 0 }`. The lambda's returned value must
+ * honour that constraint, so it is verified statically (a hard error for a provably-bad return). The
+ * constraint is read off the *declared* parameter type, so it covers a hand-written `() -> @C T`.
+ * (The `Array(size) { init }` constructor's lambda is handled via the element type instead, in
+ * verifyElementTypeConstraints, since there the annotation arrives only by type-argument substitution.)
+ */
+object ConstraintLambdaArgumentChecker : FirFunctionCallChecker(MppCheckerKind.Common) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(expression: FirFunctionCall) {
+        val mapping = (expression.argumentList as? FirResolvedArgumentList)?.mapping ?: return
+        for ((argument, parameter) in mapping) {
+            val lambda = argument as? FirAnonymousFunctionExpression ?: continue
+            val constraints = parameter.returnTypeRef.coneType.lambdaReturnConstraints(context.session)
+            if (constraints.isEmpty()) continue
+            val returnValue = lambdaReturnValue(lambda) ?: continue
+            verifyValueAgainstConstraints(returnValue, constraints, context, reporter)
+        }
     }
 }
 
