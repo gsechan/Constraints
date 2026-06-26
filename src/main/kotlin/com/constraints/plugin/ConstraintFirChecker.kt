@@ -10,6 +10,7 @@ import org.jetbrains.kotlin.fir.analysis.checkers.declaration.DeclarationChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.declaration.FirPropertyChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.declaration.FirRegularClassChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.ExpressionCheckers
+import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirFunctionCallChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirReturnExpressionChecker
 import org.jetbrains.kotlin.fir.analysis.checkers.expression.FirVariableAssignmentChecker
 import org.jetbrains.kotlin.fir.analysis.extensions.FirAdditionalCheckersExtension
@@ -20,16 +21,21 @@ import org.jetbrains.kotlin.fir.declarations.toAnnotationClassId
 import org.jetbrains.kotlin.fir.expressions.FirAnnotation
 import org.jetbrains.kotlin.fir.expressions.FirDesugaredAssignmentValueReferenceExpression
 import org.jetbrains.kotlin.fir.expressions.FirExpression
+import org.jetbrains.kotlin.fir.expressions.FirFunctionCall
 import org.jetbrains.kotlin.fir.expressions.FirGetClassCall
 import org.jetbrains.kotlin.fir.expressions.FirQualifiedAccessExpression
 import org.jetbrains.kotlin.fir.expressions.FirResolvedQualifier
 import org.jetbrains.kotlin.fir.expressions.FirReturnExpression
 import org.jetbrains.kotlin.fir.expressions.FirVariableAssignment
+import org.jetbrains.kotlin.fir.expressions.arguments
 import org.jetbrains.kotlin.fir.extensions.FirExtensionRegistrar
+import org.jetbrains.kotlin.fir.references.toResolvedNamedFunctionSymbol
 import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
 import org.jetbrains.kotlin.fir.symbols.impl.FirRegularClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirVariableSymbol
+import org.jetbrains.kotlin.fir.types.classId
+import org.jetbrains.kotlin.fir.types.resolvedType
 import org.jetbrains.kotlin.name.ClassId
 
 // ===========================================================================
@@ -62,6 +68,7 @@ class ConstraintCheckersExtension(session: FirSession) : FirAdditionalCheckersEx
         override val variableAssignmentCheckers = setOf(ConstraintAssignmentChecker)
         override val returnExpressionCheckers = setOf(ConstraintReturnChecker)
         override val annotationCheckers = setOf(DivisibleByDivisorChecker)
+        override val functionCallCheckers = setOf(ConstraintArrayWriteChecker)
     }
 }
 
@@ -98,6 +105,25 @@ object ConstraintReturnChecker : FirReturnExpressionChecker(MppCheckerKind.Commo
         function.symbol.returnTypeSize(context.session)?.let { verifySize(result, it, context, reporter) }
         function.symbol.returnTypeStringMatches(context.session).takeIf { it.isNotEmpty() }?.let { verifyStringMatches(result, it, context, reporter) }
         function.symbol.returnTypeDivisibleBy(context.session)?.let { verifyDivisibility(result, it, context, reporter) }
+    }
+}
+
+/**
+ * Indexed array write: `array[i] = value` resolves to `array.set(i, value)`. When `array`'s element
+ * type carries constraints (`Array<@IntRange(0, 10) Int>`), the written value must honour them --
+ * proven statically where possible (a hard error for a provably-bad value), otherwise deferred to
+ * `checkConstraint(value)`. Scoped to `Array<T>` so it stays in lockstep with the IR, which injects
+ * the runtime check for arrays only. (An explicit `array.set(i, v)` call is validated too.)
+ */
+object ConstraintArrayWriteChecker : FirFunctionCallChecker(MppCheckerKind.Common) {
+    context(context: CheckerContext, reporter: DiagnosticReporter)
+    override fun check(expression: FirFunctionCall) {
+        if (expression.calleeReference.toResolvedNamedFunctionSymbol()?.name?.asString() != "set") return
+        val receiverType = (expression.dispatchReceiver ?: expression.explicitReceiver)?.resolvedType ?: return
+        if (receiverType.classId != ARRAY_CLASS_ID) return
+        if (!receiverType.hasElementConstraints(context.session)) return
+        val value = expression.arguments.lastOrNull() ?: return // set(index, value)
+        verifyElementWrite(receiverType, value, context, reporter)
     }
 }
 

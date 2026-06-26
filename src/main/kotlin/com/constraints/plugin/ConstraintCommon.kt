@@ -26,6 +26,7 @@ internal val SHORT_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Na
 internal val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
 internal val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongDivisibleBy"))
 internal val SIZE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Size"))
+internal val ARRAY_CLASS_ID = ClassId(FqName("kotlin"), Name.identifier("Array"))
 internal val PREFIX_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Prefix"))
 internal val SUFFIX_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Suffix"))
 internal val MATCHES_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Matches"))
