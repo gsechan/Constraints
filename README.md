@@ -216,9 +216,15 @@ If you want to see error in your IDE in realtime without needing to do a gradle 
 
 ## Roadmap
 
-Some of the improvements I'd like to make
+Coming in v0.2.0
+
+* Basic string matching constraints
+* Improvements to container element constraints-  the new format will be List<@IntArray(0,10) Int>.
+* Array<T> support
+* Map support
+
+Longer term:
 
 * Add more built in constraints for generally useful scenarios.  Suggestions welcome
-* Improvements to collection element constraints, allowing more to be done at compile time.  Can we at least get compile time checking for the built in constraint types for say a List<Int>?
 * Some way to support mutable Collections, at least for the MutableCollection interface calls
 * Open to suggestions
