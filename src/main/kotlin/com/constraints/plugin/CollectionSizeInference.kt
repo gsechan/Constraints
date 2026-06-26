@@ -175,5 +175,5 @@ private fun inferCollectionSizeCall(call: FirFunctionCall, session: FirSession):
  * [COLLECTION_CLASS_IDS] are treated as single elements (conservative for the `+1` direction
  * but safe -- the user can annotate them with `@CollectionSize` to get tighter bounds).
  */
-private fun FirExpression.isCollectionType(): Boolean =
+internal fun FirExpression.isCollectionType(): Boolean =
     resolvedType.classId in COLLECTION_CLASS_IDS

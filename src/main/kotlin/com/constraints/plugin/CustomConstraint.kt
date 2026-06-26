@@ -415,6 +415,14 @@ private fun verdict(element: FirExpression, annotation: FirAnnotation, session: 
             else -> ElementVerdict.VIOLATED
         }
     }
+    annotation.arraySizeTarget(session)?.let {
+        val inferred = inferArraySize(element, session)
+        return when {
+            inferred.subsetOf(it.interval) -> ElementVerdict.PROVEN
+            inferred.isUnknown || inferred.overlaps(it.interval) -> ElementVerdict.UNKNOWN
+            else -> ElementVerdict.VIOLATED
+        }
+    }
     annotation.stringMatch(session)?.let { return stringMatchElementVerdict(element, it, session) }
     return ElementVerdict.UNKNOWN // opaque custom constraint: can't decide per element
 }

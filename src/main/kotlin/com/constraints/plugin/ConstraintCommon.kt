@@ -27,6 +27,7 @@ internal val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.ide
 internal val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongDivisibleBy"))
 internal val STRING_LENGTH_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("StringLength"))
 internal val COLLECTION_SIZE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("CollectionSize"))
+internal val ARRAY_SIZE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ArraySize"))
 internal val PREFIX_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Prefix"))
 internal val SUFFIX_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Suffix"))
 internal val MATCHES_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Matches"))
@@ -44,7 +45,7 @@ internal val BUILTIN_ANALYZED = setOf(
     BYTE_RANGE_CLASS_ID, SHORT_RANGE_CLASS_ID, INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID,
     FLOAT_RANGE_CLASS_ID, DOUBLE_RANGE_CLASS_ID,
     BYTE_DIVISIBLE_BY_CLASS_ID, SHORT_DIVISIBLE_BY_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
-    STRING_LENGTH_CLASS_ID, COLLECTION_SIZE_CLASS_ID,
+    STRING_LENGTH_CLASS_ID, COLLECTION_SIZE_CLASS_ID, ARRAY_SIZE_CLASS_ID,
     PREFIX_CLASS_ID, SUFFIX_CLASS_ID, MATCHES_CLASS_ID,
 )
 
