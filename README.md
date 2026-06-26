@@ -219,7 +219,7 @@ If you want to see error in your IDE in realtime without needing to do a gradle 
 Coming in v0.2.0
 
 * Basic string matching constraints
-* Improvements to container element constraints-  the new format will be List<@IntArray(0,10) Int>.
+* Improvements to container element constraints-  the new format will be List<@IntRange(0,10) Int>.
 * Array<T> support
 * Map support
 
