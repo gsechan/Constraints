@@ -287,16 +287,17 @@ private fun knownCollectionType(expr: FirExpression?, session: FirSession): Cone
     else -> null
 }
 
-// --- Builder-literal element proof (listOf / setOf / … with known elements) ---
+// --- Builder-literal element proof (listOf / setOf / arrayOf / … with known elements) ---
 
 private val ELEMENT_BUILDERS = setOf(
     "kotlin.collections.listOf", "kotlin.collections.mutableListOf", "kotlin.collections.arrayListOf",
     "kotlin.collections.setOf", "kotlin.collections.mutableSetOf",
     "kotlin.collections.hashSetOf", "kotlin.collections.linkedSetOf", "kotlin.collections.sortedSetOf",
+    "kotlin.arrayOf", // Array<T> -- the only array builder with an annotatable element type argument
 )
-private val EMPTY_BUILDERS = setOf("kotlin.collections.emptyList", "kotlin.collections.emptySet")
+private val EMPTY_BUILDERS = setOf("kotlin.collections.emptyList", "kotlin.collections.emptySet", "kotlin.emptyArray")
 
-/** The element expressions of a known list/set builder call, or null if it isn't one (or uses a spread). */
+/** The element expressions of a known list/set/array builder call, or null if it isn't one (or uses a spread). */
 private fun builderElements(rhs: FirExpression?): List<FirExpression>? {
     val call = rhs as? FirFunctionCall ?: return null
     val id = call.calleeReference.toResolvedNamedFunctionSymbol()?.callableId ?: return null

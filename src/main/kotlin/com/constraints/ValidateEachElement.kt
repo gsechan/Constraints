@@ -32,20 +32,30 @@ fun validateEachElement(target: Any, annotation: Annotation, validator: Validato
 }
 
 /**
- * Applies [validator] to every value [depth] levels of nesting deep in [collection], descending
- * through nested collections. `depth == 1` validates [collection]'s direct elements; `depth == 2`
- * validates the elements of each (collection) element, and so on. Used for an element-type
- * constraint on a nested generic, e.g. the `@IntRange` in `List<@Size(..) List<@IntRange(..) Int>>`
- * is applied at depth 2. Throws [ConstraintException] on the first failure (throw-on-first).
+ * Applies [validator] to every value [depth] levels of nesting deep in [container], descending
+ * through nested containers. `depth == 1` validates [container]'s direct elements; `depth == 2`
+ * validates the elements of each (container) element, and so on. Used for an element-type constraint
+ * on a nested generic, e.g. the `@IntRange` in `List<@Size(..) List<@IntRange(..) Int>>` -- or the
+ * array equivalent `Array<@Size(..) Array<@IntRange(..) Int>>` -- is applied at depth 2.
+ *
+ * [container] may be a [Collection] or an `Array<*>` (object array); nesting may mix the two. Throws
+ * [ConstraintException] on the first failure (throw-on-first).
  */
 @Suppress("UNCHECKED_CAST")
-fun validateEachAtDepth(collection: Collection<*>, depth: Int, validator: Validator<*, *>, annotation: Annotation) {
+fun validateEachAtDepth(container: Any, depth: Int, validator: Validator<*, *>, annotation: Annotation) {
+    val elements: Iterable<Any?> = when (container) {
+        is Collection<*> -> container
+        is Array<*> -> container.asList()
+        else -> return
+    }
     if (depth <= 1) {
         val v = validator as Validator<Any?, Annotation>
-        for (element in collection) v.validate(element, annotation)
+        for (element in elements) v.validate(element, annotation)
     } else {
-        for (element in collection) {
-            if (element is Collection<*>) validateEachAtDepth(element, depth - 1, validator, annotation)
+        for (element in elements) {
+            if (element is Collection<*> || element is Array<*>) {
+                validateEachAtDepth(element, depth - 1, validator, annotation)
+            }
         }
     }
 }

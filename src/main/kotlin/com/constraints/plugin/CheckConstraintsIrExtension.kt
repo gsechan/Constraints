@@ -176,7 +176,7 @@ private class ConstraintTransformer(
                     arguments[2] = irGetObject(application.validator.objectClass)  // validator
                 }
             }
-            // Element-type validators: validateEachAtDepth(collection, depth, validator, annotation)
+            // Element-type validators: validateEachAtDepth(container, depth, validator, annotation)
             for ((depth, application) in nestedTypeApplications) {
                 +irCall(validateEachAtDepthFunction!!).apply {
                     arguments[0] = irGet(tmp)                                     // collection
