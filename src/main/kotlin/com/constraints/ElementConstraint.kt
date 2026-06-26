@@ -4,7 +4,8 @@ import kotlin.reflect.KClass
 
 /**
  * Links a constraint annotation to an element-level [Validator] -- a validator that is applied to
- * every element of the annotated collection when `checkConstraint(collection)` is called.
+ * every element of the annotated collection or array when `checkConstraint(value)` is called.
+ * The target may be a [Collection] or any array (`Array<*>` or a primitive array like [IntArray]).
  *
  * `@ElementConstraint` is a meta-annotation: place it on an annotation class, never directly on a
  * value. The validator receives each element in turn and throws [ConstraintException] on the first

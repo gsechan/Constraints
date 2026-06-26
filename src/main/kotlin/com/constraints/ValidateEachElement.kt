@@ -1,19 +1,33 @@
 package com.constraints
 
 /**
- * Iterates over [collection] and calls [validator].[Validator.validate] for each element, passing
+ * Iterates over [target] and calls [validator].[Validator.validate] for each element, passing
  * [annotation] as the annotation instance. Throws [ConstraintException] on the first element that
- * fails (throw-on-first). Called by the compiler plugin inside the `checkConstraint(collection)`
+ * fails (throw-on-first). Called by the compiler plugin inside the `checkConstraint(value)`
  * escape hatch when the target variable carries an `@ElementConstraint`.
  *
- * The unchecked cast is safe: the plugin only generates a call here when the validator's type
- * parameter T matches the collection's element type, as enforced at the annotation-definition site.
+ * [target] may be a [Collection] or any array -- `Array<*>` or a primitive array (`IntArray`,
+ * `DoubleArray`, …) -- which share no common element-iterating supertype, so each is dispatched
+ * explicitly. The unchecked cast is safe: the plugin only generates a call here when the validator's
+ * type parameter T matches the element type, as enforced at the annotation-definition site.
  */
 @Suppress("UNCHECKED_CAST")
-fun validateEachElement(collection: Collection<*>, annotation: Annotation, validator: Validator<*, *>) {
+fun validateEachElement(target: Any, annotation: Annotation, validator: Validator<*, *>) {
     val v = validator as Validator<Any?, Annotation>
-    for (element in collection) {
-        v.validate(element, annotation)
+    when (target) {
+        is Collection<*> -> target.forEach { v.validate(it, annotation) }
+        is Array<*> -> target.forEach { v.validate(it, annotation) }
+        is IntArray -> target.forEach { v.validate(it, annotation) }
+        is LongArray -> target.forEach { v.validate(it, annotation) }
+        is DoubleArray -> target.forEach { v.validate(it, annotation) }
+        is FloatArray -> target.forEach { v.validate(it, annotation) }
+        is ShortArray -> target.forEach { v.validate(it, annotation) }
+        is ByteArray -> target.forEach { v.validate(it, annotation) }
+        is CharArray -> target.forEach { v.validate(it, annotation) }
+        is BooleanArray -> target.forEach { v.validate(it, annotation) }
+        else -> throw ConstraintException(
+            "@ElementConstraint can only be applied to a Collection or array, but got ${target::class.qualifiedName}"
+        )
     }
 }
 
@@ -21,7 +35,7 @@ fun validateEachElement(collection: Collection<*>, annotation: Annotation, valid
  * Applies [validator] to every value [depth] levels of nesting deep in [collection], descending
  * through nested collections. `depth == 1` validates [collection]'s direct elements; `depth == 2`
  * validates the elements of each (collection) element, and so on. Used for an element-type
- * constraint on a nested generic, e.g. the `@IntRange` in `List<@CollectionSize(..) List<@IntRange(..) Int>>`
+ * constraint on a nested generic, e.g. the `@IntRange` in `List<@Size(..) List<@IntRange(..) Int>>`
  * is applied at depth 2. Throws [ConstraintException] on the first failure (throw-on-first).
  */
 @Suppress("UNCHECKED_CAST")

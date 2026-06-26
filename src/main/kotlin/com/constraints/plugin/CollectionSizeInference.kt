@@ -19,17 +19,17 @@ import org.jetbrains.kotlin.name.Name
 
 // ===========================================================================
 // Collection-size inference -- maps an immutable Collection expression to the
-// [Interval] of sizes it can have, for proving `@CollectionSize`. Reuses
+// [Interval] of sizes it can have, for proving `@Size`. Reuses
 // [NumericDomain.INT] since collection sizes fit in a non-negative Int.
 //
 // Proven cases:
 //   - Known-size factory calls (listOf, setOf, emptyList, …): exact count.
 //   - `collection + element` (single, non-collection): result = receiver.size + 1 (exact).
-//   - `collection + otherCollection` (known @CollectionSize): sum of sizes.
+//   - `collection + otherCollection` (known @Size): sum of sizes.
 //   - `collection - element` (single): removes first occurrence → [max(0, min-1), max].
-//   - `collection - otherCollection` (known @CollectionSize): [max(0, min-other.max), max].
-//   - Variable reads: use the declared @CollectionSize bounds.
-//   - Callee return type annotated with @CollectionSize: trust those bounds.
+//   - `collection - otherCollection` (known @Size): [max(0, min-other.max), max].
+//   - Variable reads: use the declared @Size bounds.
+//   - Callee return type annotated with @Size: trust those bounds.
 //
 // For `+` and `-`, the inference checks whether the argument is a collection (by its type's
 // ClassId) or a single element, which enables tighter bounds than the unified approach.
@@ -94,7 +94,7 @@ internal fun inferCollectionSize(expr: FirExpression?, session: FirSession): Int
     is FirFunctionCall -> inferCollectionSizeCall(expr, session)
 
     is FirPropertyAccessExpression ->
-        expr.calleeReference.toResolvedVariableSymbol()?.collectionSizeTarget(session)?.interval ?: Interval.UNKNOWN
+        expr.calleeReference.toResolvedVariableSymbol()?.sizeTarget(session)?.interval ?: Interval.UNKNOWN
 
     is FirDesugaredAssignmentValueReferenceExpression ->
         inferCollectionSize(expr.expressionRef.value, session)
@@ -165,7 +165,7 @@ private fun inferCollectionSizeCall(call: FirFunctionCall, session: FirSession):
         }
     }
 
-    return callee.returnTypeCollectionSize(session)?.interval ?: Interval.UNKNOWN
+    return callee.returnTypeSize(session)?.interval ?: Interval.UNKNOWN
 }
 
 /**
@@ -173,7 +173,7 @@ private fun inferCollectionSizeCall(call: FirFunctionCall, session: FirSession):
  * distinguish `list + element` (single element → always +1) from `list + otherList`
  * (unknown collection → cannot bound the size). Custom collection types not in
  * [COLLECTION_CLASS_IDS] are treated as single elements (conservative for the `+1` direction
- * but safe -- the user can annotate them with `@CollectionSize` to get tighter bounds).
+ * but safe -- the user can annotate them with `@Size` to get tighter bounds).
  */
-private fun FirExpression.isCollectionType(): Boolean =
+internal fun FirExpression.isCollectionType(): Boolean =
     resolvedType.classId in COLLECTION_CLASS_IDS

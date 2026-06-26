@@ -1,6 +1,6 @@
 package com.constraints.demo
 
-import com.constraints.CollectionSize
+import com.constraints.Size
 import com.constraints.ConstraintException
 import com.constraints.ElementConstraint
 import com.constraints.Validator
@@ -37,7 +37,7 @@ object PositiveElementValidator : Validator<Int, AllPositive> {
 }
 
 // An annotation that combines both a collection-level and an element-level constraint.
-@CollectionSize(1, Int.MAX_VALUE)
+@Size(1, Int.MAX_VALUE)
 @ElementConstraint(NonNegativeElementValidator::class)
 @Target(
     AnnotationTarget.LOCAL_VARIABLE,
@@ -87,9 +87,46 @@ class ElementConstraintPluginTest {
         assertEquals(listOf(1, 2, 3), b)
     }
 
+    // --- Arrays: @ElementConstraint applies element-by-element to arrays too ---
+
+    @Test
+    fun `element validator passes for all-valid primitive array`() {
+        @AllPositive val arr = checkConstraint(intArrayOf(1, 2, 3))
+        assertEquals(3, arr.size)
+    }
+
+    @Test
+    fun `element validator throws on first invalid primitive-array element`() {
+        assertFailsWith<ConstraintException> {
+            @AllPositive val arr = checkConstraint(intArrayOf(1, -2, 3))
+            println(arr)
+        }
+    }
+
+    @Test
+    fun `element validator passes for all-valid object array`() {
+        @AllPositive val arr = checkConstraint(arrayOf(1, 2, 3))
+        assertEquals(3, arr.size)
+    }
+
+    @Test
+    fun `element validator throws on first invalid object-array element`() {
+        assertFailsWith<ConstraintException> {
+            @AllPositive val arr = checkConstraint(arrayOf(1, 2, -3))
+            println(arr)
+        }
+    }
+
+    @Test
+    fun `transfer between same element-constrained arrays compiles`() {
+        @AllPositive val a = checkConstraint(intArrayOf(1, 2, 3))
+        @AllPositive val b = a   // proven by transfer; no re-check injected
+        assertEquals(3, b.size)
+    }
+
     @Test
     fun `combined collection-level and element-level constraints both checked`() {
-        // CollectionSize(1, MAX) checked first (collection-level), then each element (element-level).
+        // Size(1, MAX) checked first (collection-level), then each element (element-level).
         @NonEmptyAllNonNegative val list = checkConstraint(listOf(0, 1, 2))
         assertEquals(3, list.size)
     }

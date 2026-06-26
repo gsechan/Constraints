@@ -12,13 +12,13 @@ import org.jetbrains.kotlin.fir.references.toResolvedVariableSymbol
 
 // ===========================================================================
 // String-length inference -- maps a CharSequence expression to the [Interval]
-// of lengths it can have, for proving `@StringLength`. Reuses [NumericDomain.INT].
+// of lengths it can have, for proving `@Size`. Reuses [NumericDomain.INT].
 //
 // Proven cases:
 //   - String literals: exact length.
 //   - Concatenation (`+`): sum of both lengths when both operands are known.
-//   - Variable reads: use the declared @StringLength bounds.
-//   - Callee return type annotated with @StringLength: trust those bounds.
+//   - Variable reads: use the declared @Size bounds.
+//   - Callee return type annotated with @Size: trust those bounds.
 // ===========================================================================
 
 /**
@@ -31,9 +31,9 @@ internal fun inferStringLength(expr: FirExpression?, session: FirSession): Inter
 
     is FirFunctionCall -> inferStringLengthCall(expr, session)
 
-    // A bare variable read: use its declared @StringLength bounds.
+    // A bare variable read: use its declared @Size bounds.
     is FirPropertyAccessExpression ->
-        expr.calleeReference.toResolvedVariableSymbol()?.stringLengthTarget(session)?.interval ?: Interval.UNKNOWN
+        expr.calleeReference.toResolvedVariableSymbol()?.sizeTarget(session)?.interval ?: Interval.UNKNOWN
 
     is FirDesugaredAssignmentValueReferenceExpression ->
         inferStringLength(expr.expressionRef.value, session)
@@ -52,6 +52,6 @@ private fun inferStringLengthCall(call: FirFunctionCall, session: FirSession): I
         return NumericDomain.INT.plus(receiverLen, argLen)
     }
 
-    // Trust a @StringLength on the callee's return type.
-    return callee.returnTypeStringLength(session)?.interval ?: Interval.UNKNOWN
+    // Trust a @Size on the callee's return type.
+    return callee.returnTypeSize(session)?.interval ?: Interval.UNKNOWN
 }

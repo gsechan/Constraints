@@ -25,8 +25,7 @@ internal val BYTE_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Nam
 internal val SHORT_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("ShortDivisibleBy"))
 internal val DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("DivisibleBy"))
 internal val LONG_DIVISIBLE_BY_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("LongDivisibleBy"))
-internal val STRING_LENGTH_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("StringLength"))
-internal val COLLECTION_SIZE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("CollectionSize"))
+internal val SIZE_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Size"))
 internal val PREFIX_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Prefix"))
 internal val SUFFIX_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Suffix"))
 internal val MATCHES_CLASS_ID = ClassId(FqName("com.constraints"), Name.identifier("Matches"))
@@ -44,8 +43,17 @@ internal val BUILTIN_ANALYZED = setOf(
     BYTE_RANGE_CLASS_ID, SHORT_RANGE_CLASS_ID, INT_RANGE_CLASS_ID, LONG_RANGE_CLASS_ID,
     FLOAT_RANGE_CLASS_ID, DOUBLE_RANGE_CLASS_ID,
     BYTE_DIVISIBLE_BY_CLASS_ID, SHORT_DIVISIBLE_BY_CLASS_ID, DIVISIBLE_BY_CLASS_ID, LONG_DIVISIBLE_BY_CLASS_ID,
-    STRING_LENGTH_CLASS_ID, COLLECTION_SIZE_CLASS_ID,
+    SIZE_CLASS_ID,
     PREFIX_CLASS_ID, SUFFIX_CLASS_ID, MATCHES_CLASS_ID,
+)
+
+/** CharSequence types whose `@Size` means a length -- used by inferSize to route to length inference. */
+internal val CHAR_SEQUENCE_CLASS_IDS = setOf(
+    ClassId(FqName("kotlin"), Name.identifier("String")),
+    ClassId(FqName("kotlin"), Name.identifier("CharSequence")),
+    ClassId(FqName("kotlin.text"), Name.identifier("StringBuilder")),
+    ClassId(FqName("java.lang"), Name.identifier("StringBuilder")),
+    ClassId(FqName("java.lang"), Name.identifier("StringBuffer")),
 )
 
 /**

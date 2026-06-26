@@ -399,16 +399,8 @@ private fun verdict(element: FirExpression, annotation: FirAnnotation, session: 
             else -> ElementVerdict.VIOLATED
         }
     }
-    annotation.stringLengthTarget(session)?.let {
-        val inferred = inferStringLength(element, session)
-        return when {
-            inferred.subsetOf(it.interval) -> ElementVerdict.PROVEN
-            inferred.isUnknown || inferred.overlaps(it.interval) -> ElementVerdict.UNKNOWN
-            else -> ElementVerdict.VIOLATED
-        }
-    }
-    annotation.collectionSizeTarget(session)?.let {
-        val inferred = inferCollectionSize(element, session)
+    annotation.sizeTarget(session)?.let {
+        val inferred = inferSize(element, session)
         return when {
             inferred.subsetOf(it.interval) -> ElementVerdict.PROVEN
             inferred.isUnknown || inferred.overlaps(it.interval) -> ElementVerdict.UNKNOWN
